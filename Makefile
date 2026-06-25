@@ -1,6 +1,6 @@
 PREFIX ?= /usr/local
 BINDIR = $(PREFIX)/bin
-SYSDIR = $(PREFIX)/lib/systemd/user
+SYSDIR = $(HOME)/.config/systemd/user
 
 .PHONY: all build install uninstall daemon client clean
 
