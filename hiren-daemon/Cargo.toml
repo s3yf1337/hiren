@@ -1,0 +1,17 @@
+[package]
+name = "hiren-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+hiren-shared = { path = "../hiren-shared" }
+tokio = { version = "1", features = ["net", "io-util", "sync", "rt-multi-thread", "macros"] }
+fuzzy-matcher = "0.3"
+notify = { version = "6", features = ["macos_kqueue"] }
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+
+[dev-dependencies]
+tempfile = "3"
