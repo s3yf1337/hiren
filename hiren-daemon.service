@@ -6,7 +6,7 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=hiren-daemon
+ExecStart=%h/.local/bin/hiren-daemon
 Restart=on-failure
 RestartSec=2
 

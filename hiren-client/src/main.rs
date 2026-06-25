@@ -163,7 +163,6 @@ fn default_css() -> String {
     border: 1px solid rgba(255, 255, 255, 0.12);
     margin-bottom: 8px;
     caret-color: #89b4fa;
-    text-align: center;
 }
 
 .search-entry:focus {
@@ -208,7 +207,6 @@ fn default_css() -> String {
 
 .app-name {
     font-weight: 500;
-    text-align: center;
 }
 "#
     .to_string()

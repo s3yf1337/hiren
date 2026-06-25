@@ -1,0 +1,52 @@
+# Maintainer: s3yf1337 <s3yf1337@github>
+
+pkgname=hiren-git
+_pkgname=hiren
+pkgver=0.1.0.r5.5b36177
+pkgrel=1
+pkgdesc="Wayland-native app launcher with fuzzy search, window switching, and inline calculator"
+arch=('x86_64')
+url="https://github.com/s3yf1337/hiren"
+license=('MIT')
+depends=(
+    'gtk4'
+    'gtk4-layer-shell'
+)
+makedepends=(
+    'git'
+    'rust'
+    'cargo'
+)
+optdepends=(
+    'wl-clipboard: clipboard support for calc mode'
+    'xclip: clipboard support for calc mode (X11)'
+    'wmctrl: X11 window switching'
+    'sway: Sway window switching'
+    'hyprland: Hyprland window switching'
+)
+provides=("${_pkgname}=${pkgver}")
+conflicts=("${_pkgname}")
+source=("${pkgname}::git+https://github.com/s3yf1337/hiren.git")
+sha256sums=('SKIP')
+
+pkgver() {
+    cd "${pkgname}"
+    printf "0.1.0.r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+    cd "${pkgname}"
+    cargo build --release --locked
+}
+
+package() {
+    cd "${pkgname}"
+
+    install -Dm755 target/release/hiren-daemon  "${pkgdir}/usr/bin/hiren-daemon"
+    install -Dm755 target/release/hiren-client "${pkgdir}/usr/bin/hiren-client"
+
+    install -Dm644 hiren-daemon.service "${pkgdir}/usr/lib/systemd/user/hiren-daemon.service"
+
+    install -Dm644 LICENSE              "${pkgdir}/usr/share/licenses/${_pkgname}/LICENSE"
+    install -Dm644 README.md            "${pkgdir}/usr/share/doc/${_pkgname}/README.md"
+}

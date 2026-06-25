@@ -12,3 +12,6 @@ target/
 # OS
 .DS_Store
 Thumbs.db
+pkg/aur/src/
+pkg/aur/hiren-git/
+pkg/aur/pkg/
