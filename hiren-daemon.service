@@ -1,8 +1,6 @@
 [Unit]
 Description=hiren application launcher daemon
-Documentation=https://github.com/user/hiren
-After=graphical-session-pre.target
-PartOf=graphical-session.target
+Documentation=https://github.com/s3yf1337/hiren
 
 [Service]
 Type=simple
@@ -11,4 +9,4 @@ Restart=on-failure
 RestartSec=2
 
 [Install]
-WantedBy=graphical-session.target
+WantedBy=default.target
