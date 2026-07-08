@@ -45,6 +45,12 @@ pub struct AppEntry {
     /// Заполняется при построении кэша, чтобы избежать format!() на каждый запрос.
     #[serde(default)]
     pub search_text: String,
+    /// Релевантность результата поиска (fuzzy-скор, >=0).
+    /// Заполняется источником (демон/drun, run, window) при поиске.
+    /// Для записей без поиска (пустой запрос) — 0.
+    /// Используется клиентом для гибридной сортировки «релевантность × частота».
+    #[serde(default)]
+    pub score: i64,
 }
 
 impl AppEntry {
@@ -63,6 +69,7 @@ impl AppEntry {
             mode: AppMode::Drun,
             keywords,
             search_text,
+            score: 0,
         }
     }
 
@@ -77,6 +84,7 @@ impl AppEntry {
             mode: AppMode::Run,
             keywords: String::new(),
             search_text,
+            score: 0,
         }
     }
 
@@ -91,6 +99,7 @@ impl AppEntry {
             mode: AppMode::Window,
             keywords: String::new(),
             search_text,
+            score: 0,
         }
     }
 
@@ -106,6 +115,7 @@ impl AppEntry {
             mode: AppMode::Calc,
             keywords: String::new(),
             search_text,
+            score: 0,
         }
     }
 
@@ -121,6 +131,7 @@ impl AppEntry {
             mode: AppMode::Calc,
             keywords: String::new(),
             search_text,
+            score: 0,
         }
     }
 }

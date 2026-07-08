@@ -80,11 +80,15 @@ impl AppState {
             }
         }
 
-        // Дедупликация по id: первый (из системной директории) — канонический,
-        // локальный (~/.local/...) — перезаписывает.
+        // Дедупликация по exec: локальный (~/.local/...) перезаписывает
+        // системный, если они запускают одно и то же. Дедуп по id здесь
+        // не годится — разные .desktop могут иметь одинаковый stem
+        // (напр. `vesktop.desktop` системный и локальный `vesktop PROXY`),
+        // и тогда локальный вытеснял бы системный целиком.
         let mut seen = std::collections::HashMap::new();
         for entry in entries {
-            seen.insert(entry.id.clone(), entry);
+            let key = entry.exec.clone();
+            seen.insert(key, entry);
         }
 
         let unique: Vec<AppEntry> = seen.into_values().collect();
@@ -106,17 +110,37 @@ impl AppState {
         let mut scored: Vec<(i64, AppEntry)> = cache
             .iter()
             .filter_map(|entry| {
-                // search_text предвычислен при построении кэша (name + keywords)
-                self.matcher
-                    .fuzzy_match(&entry.search_text, query)
-                    .map(|score| (score, entry.clone()))
+                // Матчим имя и keywords отдельно. Совпадение по имени весит
+                // полностью, по keywords — со штрафом (0.4), чтобы точное
+                // попадание в название всегда было выше случайного совпадения
+                // в ключевых словах (иначе "steam" лезет вверх из-за
+                // telegram/sms в keywords у AyuGram).
+                let name_score = self.matcher.fuzzy_match(&entry.name, query);
+                let kw_score = self
+                    .matcher
+                    .fuzzy_match(&entry.keywords, query)
+                    .map(|s| (s as f64 * 0.4) as i64);
+                let score = name_score.max(kw_score).unwrap_or(0);
+                if score > 0 {
+                    Some((score, entry.clone()))
+                } else {
+                    None
+                }
             })
             .collect();
 
         // Сортировка по убыванию score
         scored.sort_by(|a, b| b.0.cmp(&a.0));
 
-        scored.into_iter().map(|(_, entry)| entry).collect()
+        // Протаскиваем score в запись, чтобы клиент мог сделать
+        // гибридную сортировку «релевантность × частота».
+        scored
+            .into_iter()
+            .map(|(score, mut entry)| {
+                entry.score = score;
+                entry
+            })
+            .collect()
     }
 }
 

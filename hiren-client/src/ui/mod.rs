@@ -301,6 +301,13 @@ impl UiContext {
             rest.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
             other_results = frequent;
             other_results.extend(rest);
+        } else {
+            // Непустой запрос: гибридная сортировка «релевантность × частота».
+            // Часто используемые приложения поднимаются выше, но точный
+            // релевантный матч всё ещё побеждает.
+            let freq = self.freq.borrow();
+            let weight = self.config.freq_weight;
+            other_results = freq.sort_by_frecency(other_results, weight);
         }
 
         // Финальный порядок: calc → window → частые → остальные drun/run

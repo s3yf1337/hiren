@@ -146,6 +146,9 @@ pub struct Config {
     pub window: WindowConfig,
     /// Выравнивание текста в поле ввода и результатах: 0.0 = слева, 0.5 = по центру.
     pub text_align: f32,
+    /// Вес частоты запусков в гибридной сортировке поиска (0.0–1.0+).
+    /// 0.0 = частота не учитывается, 1.0 = честный буст. 0.8 по умолчанию.
+    pub freq_weight: f64,
 }
 
 impl Default for Config {
@@ -159,6 +162,7 @@ impl Default for Config {
             terminal: TerminalConfig::default(),
             window: WindowConfig::default(),
             text_align: 0.0,
+            freq_weight: 0.8,
         }
     }
 }
@@ -199,6 +203,8 @@ struct UiSection {
     height: Option<i32>,
     #[serde(default)]
     text_align: Option<String>,
+    #[serde(default)]
+    freq_weight: Option<f64>,
 }
 
 impl Default for UiSection {
@@ -208,6 +214,7 @@ impl Default for UiSection {
             width: None,
             height: None,
             text_align: None,
+            freq_weight: None,
         }
     }
 }
@@ -466,6 +473,7 @@ impl Config {
             terminal,
             window,
             text_align: parse_text_align(&toml_cfg.ui.text_align.unwrap_or_default()),
+            freq_weight: toml_cfg.ui.freq_weight.unwrap_or(0.8),
         }
     }
 
@@ -493,6 +501,7 @@ impl Config {
             terminal: TerminalConfig::default(),
             window: WindowConfig::default(),
             text_align: 0.0,
+            freq_weight: 0.8,
         }
     }
 

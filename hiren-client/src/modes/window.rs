@@ -243,7 +243,14 @@ impl SearchMode for WindowMode {
 
         scored.sort_by(|a, b| b.0.cmp(&a.0));
 
-        let entries: Vec<AppEntry> = scored.into_iter().map(|(_, w)| w).collect();
+        // Протаскиваем score в запись для гибридной сортировки на клиенте.
+        let entries: Vec<AppEntry> = scored
+            .into_iter()
+            .map(|(score, mut w)| {
+                w.score = score;
+                w
+            })
+            .collect();
         SearchResult::Entries(entries)
     }
 

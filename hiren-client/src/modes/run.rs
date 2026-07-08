@@ -103,10 +103,14 @@ impl SearchMode for RunMode {
 
         scored.sort_by(|a, b| b.0.cmp(&a.0));
 
+        // Протаскиваем score в запись для гибридной сортировки на клиенте.
         let entries: Vec<AppEntry> = scored
             .into_iter()
             .take(50)
-            .map(|(_, entry)| entry)
+            .map(|(score, mut entry)| {
+                entry.score = score;
+                entry
+            })
             .collect();
 
         SearchResult::Entries(entries)
