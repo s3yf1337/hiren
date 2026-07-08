@@ -37,7 +37,7 @@ apt install libgtk-4-dev libgtk4-layer-shell-dev
 ## Build
 
 ```bash
-git clone https://github.com/seyf1337/hiren.git
+git clone https://github.com/s3yf1337/hiren.git
 cd hiren
 cargo build --release
 ```
