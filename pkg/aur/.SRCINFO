@@ -1,6 +1,6 @@
 pkgbase = hiren-git
 	pkgdesc = Wayland-native app launcher with fuzzy search, window switching, and inline calculator
-	pkgver = 0.1.0.r5.5b36177
+	pkgver = 0.1.0.r5.4267369
 	pkgrel = 1
 	url = https://github.com/s3yf1337/hiren
 	arch = x86_64
@@ -15,7 +15,7 @@ pkgbase = hiren-git
 	optdepends = wmctrl: X11 window switching
 	optdepends = sway: Sway window switching
 	optdepends = hyprland: Hyprland window switching
-	provides = hiren=0.1.0.r5.5b36177
+	provides = hiren=0.1.0.r5.4267369
 	conflicts = hiren
 	source = hiren-git::git+https://github.com/s3yf1337/hiren.git
 	sha256sums = SKIP
