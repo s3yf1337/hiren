@@ -47,6 +47,19 @@ impl Default for ModeConfig {
     }
 }
 
+/// Режим клавиатуры для layer-shell окна лаунчера.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeyboardModeConfig {
+    /// Композитор отдаёт клавиатуру лаунчеру, пока он видим.
+    /// Стандарт для лаунчеров: фокус ввода есть сразу при показе,
+    /// даже под композиторами, которые не фокусируют OnDemand-слои (driftwm).
+    #[default]
+    Exclusive,
+    /// Только по запросу/клику — композитор сам решает, давать ли фокус.
+    /// Под части композиторов лаунчер может не ловить фокус автоматически.
+    OnDemand,
+}
+
 /// Конфигурация терминала для режима run.
 #[derive(Debug, Clone)]
 pub struct TerminalConfig {
@@ -149,6 +162,8 @@ pub struct Config {
     /// Вес частоты запусков в гибридной сортировке поиска (0.0–1.0+).
     /// 0.0 = частота не учитывается, 1.0 = честный буст. 0.8 по умолчанию.
     pub freq_weight: f64,
+    /// Режим клавиатуры layer-shell окна. По умолчанию `exclusive`.
+    pub keyboard_mode: KeyboardModeConfig,
 }
 
 impl Default for Config {
@@ -163,6 +178,7 @@ impl Default for Config {
             window: WindowConfig::default(),
             text_align: 0.0,
             freq_weight: 0.8,
+            keyboard_mode: KeyboardModeConfig::Exclusive,
         }
     }
 }
@@ -205,6 +221,8 @@ struct UiSection {
     text_align: Option<String>,
     #[serde(default)]
     freq_weight: Option<f64>,
+    #[serde(default)]
+    keyboard_mode: Option<String>,
 }
 
 impl Default for UiSection {
@@ -215,6 +233,7 @@ impl Default for UiSection {
             height: None,
             text_align: None,
             freq_weight: None,
+            keyboard_mode: None,
         }
     }
 }
@@ -474,6 +493,7 @@ impl Config {
             window,
             text_align: parse_text_align(&toml_cfg.ui.text_align.unwrap_or_default()),
             freq_weight: toml_cfg.ui.freq_weight.unwrap_or(0.8),
+            keyboard_mode: parse_keyboard_mode(toml_cfg.ui.keyboard_mode.as_deref()),
         }
     }
 
@@ -502,6 +522,7 @@ impl Config {
             window: WindowConfig::default(),
             text_align: 0.0,
             freq_weight: 0.8,
+            keyboard_mode: KeyboardModeConfig::Exclusive,
         }
     }
 
@@ -527,6 +548,26 @@ fn parse_text_align(s: &str) -> f32 {
         "center" | "middle" => 0.5,
         "right" => 1.0,
         _ => 0.0, // "left" и всё остальное
+    }
+}
+
+/// Парсит режим клавиатуры layer-shell из строки конфига.
+///
+/// Допустимые значения: `"exclusive"` (по умолчанию) и `"on_demand"`.
+/// Неизвестное/пустое значение → `Exclusive`.
+fn parse_keyboard_mode(s: Option<&str>) -> KeyboardModeConfig {
+    match s {
+        Some(v) => match v.to_lowercase().as_str() {
+            "on_demand" | "ondemand" => KeyboardModeConfig::OnDemand,
+            "exclusive" => KeyboardModeConfig::Exclusive,
+            other => {
+                eprintln!(
+                    "[hiren-config] WARN: unknown keyboard_mode '{other}', using exclusive"
+                );
+                KeyboardModeConfig::Exclusive
+            }
+        },
+        None => KeyboardModeConfig::Exclusive,
     }
 }
 

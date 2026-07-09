@@ -35,6 +35,8 @@ fn main() -> glib::ExitCode {
 fn activate(app: &gtk::Application) -> anyhow::Result<()> {
     // --- Загрузка конфига ---
     let config = config::Config::load();
+    // Захватываем режим клавиатуры до move config в UiContext::build
+    let keyboard_mode = config.keyboard_mode;
 
     // --- Загрузка CSS ---
     load_css();
@@ -58,7 +60,7 @@ fn activate(app: &gtk::Application) -> anyhow::Result<()> {
     });
 
     // --- Layer-shell (Wayland-оверлей) ---
-    setup_layer_shell(&window);
+    setup_layer_shell(&window, keyboard_mode);
 
     // --- Показываем окно ---
     ctx.window_launcher.present();
@@ -70,14 +72,18 @@ fn activate(app: &gtk::Application) -> anyhow::Result<()> {
 }
 
 /// Настроить окно как Wayland-оверлей через gtk4-layer-shell.
-fn setup_layer_shell(window: &gtk::ApplicationWindow) {
+fn setup_layer_shell(window: &gtk::ApplicationWindow, mode: config::KeyboardModeConfig) {
     window.init_layer_shell();
 
     // Поверх всего
     window.set_layer(Layer::Overlay);
 
-    // OnDemand — стандартный режим для лаунчеров, не блокирует маршрутизацию клавиш в GTK
-    window.set_keyboard_mode(KeyboardMode::OnDemand);
+    // Режим клавиатуры из конфига (по умолчанию Exclusive).
+    let kb_mode = match mode {
+        config::KeyboardModeConfig::Exclusive => KeyboardMode::Exclusive,
+        config::KeyboardModeConfig::OnDemand => KeyboardMode::OnDemand,
+    };
+    window.set_keyboard_mode(kb_mode);
 }
 
 // ---------------------------------------------------------------------------
