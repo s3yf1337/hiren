@@ -30,6 +30,7 @@ pub fn run(core: AppCore) -> Result<()> {
         scale: 1.0,
         cursor_pos: None,
         modifiers: ModifiersState::empty(),
+        next_frame: None,
     };
     event_loop.run_app(&mut app)?;
     Ok(())
@@ -44,6 +45,10 @@ struct WinitApp {
     scale: f32,
     cursor_pos: Option<(f64, f64)>,
     modifiers: ModifiersState,
+    /// Earliest moment the next animation frame may be drawn. `about_to_wait`
+    /// fires on every loop pass — without this gate `request_redraw` would
+    /// preempt the ControlFlow wait and busy-spin the loop at 100% CPU.
+    next_frame: Option<Instant>,
 }
 
 impl WinitApp {
@@ -96,14 +101,25 @@ impl WinitApp {
         }
     }
 
-    /// Schedule the next frame: ~60 fps while animating, else fully idle.
-    fn schedule(&self, event_loop: &ActiveEventLoop) {
+    /// Schedule the next frame: vsync-ish cadence while animations run,
+    /// ~22 fps for time-driven themes with nothing else in motion (caret
+    /// blink), slow wake-ups only while an auto-close deadline is pending,
+    /// else fully idle.
+    fn schedule(&mut self, event_loop: &ActiveEventLoop) {
         let core = self.core.as_ref().unwrap();
-        if core.needs_frame() {
-            event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(16)));
+        self.next_frame = if core.runtime.animating() {
+            Some(Instant::now() + Duration::from_millis(16))
+        } else if core.last_uses_time_debug() || core.needs_frame() {
+            Some(Instant::now() + Duration::from_millis(45))
+        } else if core.auto_close_pending() {
+            Some(Instant::now() + Duration::from_millis(250))
         } else {
-            event_loop.set_control_flow(ControlFlow::Wait);
-        }
+            None
+        };
+        event_loop.set_control_flow(match self.next_frame {
+            Some(t) => ControlFlow::WaitUntil(t),
+            None => ControlFlow::Wait,
+        });
     }
 
     fn maybe_exit(&mut self, outcome: Outcome, event_loop: &ActiveEventLoop) {
@@ -142,7 +158,8 @@ impl ApplicationHandler for WinitApp {
     /// animations keep playing while the loop is otherwise idle.
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         if let Some(w) = &self.window {
-            if self.core.as_ref().unwrap().needs_frame() {
+            let due = self.next_frame.map(|t| Instant::now() >= t).unwrap_or(false);
+            if due {
                 w.request_redraw();
             }
         }
