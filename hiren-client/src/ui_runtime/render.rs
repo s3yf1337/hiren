@@ -1,0 +1,372 @@
+//! Renderer — tiny-skia + cosmic-text onto a premultiplied RGBA pixmap.
+//!
+//! Draw order = resolved node order (z-sorted). Every node is drawn through an
+//! optional transform (rotation/scale around its center). Text is rasterized
+//! into its own pixmap first, then composited — so transformed text works.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+use tiny_skia::{
+    Color as SkColor, GradientStop, LinearGradient, Paint, PathBuilder, Pixmap, PixmapPaint,
+    Rect, SpreadMode, Transform,
+};
+
+use super::color::{parse_color_str, Color};
+use super::node::ResolvedNode;
+use super::text::TextEngine;
+
+pub struct Renderer {
+    pub text: TextEngine,
+    images: HashMap<PathBuf, Option<Pixmap>>,
+    /// Scratch surface for scissored nodes (repeater viewports).
+    scratch: Option<Pixmap>,
+}
+
+impl Default for Renderer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Renderer {
+    pub fn new() -> Self {
+        Self { text: TextEngine::new(), images: HashMap::new(), scratch: None }
+    }
+
+    /// Render at `width x height` physical pixels; nodes are authored in
+    /// logical pixels and scaled by `scale` (hidpi).
+    pub fn render(&mut self, nodes: &[ResolvedNode], width: u32, height: u32, scale: f32) -> Pixmap {
+        let mut pixmap = Pixmap::new(width.max(1), height.max(1)).expect("pixmap");
+        pixmap.fill(SkColor::TRANSPARENT);
+        let scale = if scale.is_finite() && scale >= 0.25 { scale } else { 1.0 };
+        for node in nodes {
+            if !node.visible || node.opacity <= 0.004 {
+                continue;
+            }
+            if let Some((cx, cy, cw, ch)) = node.clip {
+                // Scissor: draw into a scratch surface, then composite only
+                // the part of the node that falls inside the clip rect.
+                let pad = 80.0 * scale; // rotation/scale/shadow spill
+                let bx = ((node.x.min(node.x + node.width) - pad).floor() as i32).max(0);
+                let by = ((node.y.min(node.y + node.height) - pad).floor() as i32).max(0);
+                let br = ((node.x.max(node.x + node.width) + pad).ceil() as i32).min(width as i32);
+                let bb = ((node.y.max(node.y + node.height) + pad).ceil() as i32).min(height as i32);
+                if br <= bx || bb <= by {
+                    continue;
+                }
+                // Node ∩ clip rect, in physical pixels.
+                let ix0 = bx.max((cx * scale).floor() as i32).max(0);
+                let iy0 = by.max((cy * scale).floor() as i32).max(0);
+                let ix1 = br.min(((cx + cw) * scale).ceil() as i32).min(width as i32);
+                let iy1 = bb.min(((cy + ch) * scale).ceil() as i32).min(height as i32);
+                if ix1 <= ix0 || iy1 <= iy0 {
+                    continue; // entirely clipped away
+                }
+                let mut scratch = self.scratch.take().unwrap_or_else(|| {
+                    Pixmap::new(width.max(1), height.max(1)).expect("scratch pixmap")
+                });
+                if scratch.width() < ix1 as u32 || scratch.height() < iy1 as u32 {
+                    scratch = Pixmap::new(width.max(1), height.max(1)).expect("scratch pixmap");
+                }
+                scratch.fill(SkColor::TRANSPARENT);
+                self.draw_node(node, &mut scratch, scale);
+                if let Some(region) =
+                    tiny_skia::IntRect::from_xywh(ix0, iy0, (ix1 - ix0) as u32, (iy1 - iy0) as u32)
+                {
+                    if let Some(sub) = scratch.clone_rect(region) {
+                        pixmap.draw_pixmap(
+                            ix0,
+                            iy0,
+                            sub.as_ref(),
+                            &PixmapPaint::default(),
+                            Transform::identity(),
+                            None,
+                        );
+                    }
+                }
+                self.scratch = Some(scratch);
+            } else {
+                self.draw_node(node, &mut pixmap, scale);
+            }
+        }
+        pixmap
+    }
+
+    fn node_transform_with_scale(node: &ResolvedNode, scale: f32) -> Transform {
+        // physical = scale * (node transform about logical center)
+        if scale == 1.0 {
+            return Self::node_transform(node);
+        }
+        Transform::from_scale(scale, scale).pre_concat(Self::node_transform(node))
+    }
+
+    #[allow(clippy::only_used_in_recursion)]
+    fn node_transform(node: &ResolvedNode) -> Transform {
+        if node.rotation.abs() < 1e-4 && (node.scale - 1.0).abs() < 1e-4 {
+            return Transform::identity();
+        }
+        let cx = node.x + node.width / 2.0;
+        let cy = node.y + node.height / 2.0;
+        // p' = T(c) · R · S · T(-c) · p   (rotate/scale about the node center)
+        Transform::identity()
+            .pre_concat(Transform::from_translate(cx, cy))
+            .pre_concat(Transform::from_rotate(node.rotation))
+            .pre_concat(Transform::from_scale(node.scale, node.scale))
+            .pre_concat(Transform::from_translate(-cx, -cy))
+    }
+
+    fn draw_node(&mut self, node: &ResolvedNode, pixmap: &mut Pixmap, scale: f32) {
+        let t = Self::node_transform_with_scale(node, scale);
+        let opacity = node.opacity.clamp(0.0, 1.0);
+
+        // Shadow: "dx dy blur color" — three feathered layers.
+        if let Some(shadow) = node.props.get("shadow") {
+            if let Some((sx, sy, blur, sr, sg, sb, sa)) = parse_shadow(shadow) {
+                let shadow_alpha = (sa as f32 * opacity) as u8;
+                if shadow_alpha > 2 {
+                    for i in 0..3 {
+                        let f = i as f32 / 2.0; // 0, 0.5, 1
+                        let expand = blur * f * 0.5;
+                        let layer_alpha = (shadow_alpha as f32 * (0.35 - f * 0.22).max(0.06)) as u8;
+                        let mut paint = Paint::default();
+                        paint.set_color_rgba8(sr, sg, sb, layer_alpha);
+                        paint.anti_alias = true;
+                        let rect = Rect::from_xywh(
+                            node.x + sx - expand,
+                            node.y + sy - expand,
+                            (node.width + expand * 2.0).max(1.0),
+                            (node.height + expand * 2.0).max(1.0),
+                        );
+                        let Some(rect) = rect else { continue };
+                        let path = rounded_rect_path(rect, (node.radius + expand).max(0.0));
+                        pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, t, None);
+                    }
+                }
+            }
+        }
+
+        // Background: solid color or linear-gradient.
+        let bg_raw = node.props.get("background").or_else(|| node.props.get("fill"));
+        if let Some(bg_raw) = bg_raw {
+            let bg = bg_raw.trim();
+            if bg.starts_with("linear-gradient") {
+                if let Some(shader) = parse_linear_gradient(bg, node, opacity) {
+                    let mut paint = Paint::default();
+                    paint.shader = shader;
+                    paint.anti_alias = true;
+                    let rect = node.rect();
+                    let path = rounded_rect_path(rect, node.radius);
+                    pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, t, None);
+                }
+            } else if let Some((r, g, b, a)) = parse_color_str(bg) {
+                fill_rect(pixmap, node, t, r, g, b, (a as f32 * opacity) as u8);
+            }
+        } else if let Some((r, g, b, a)) = node.background {
+            fill_rect(pixmap, node, t, r, g, b, (a as f32 * opacity) as u8);
+        }
+
+        // Image (PNG file via `src` prop).
+        if node.kind == "Image" || node.props.contains_key("src") {
+            self.draw_image(node, t, opacity, pixmap, scale);
+        }
+
+        // Text — rasterized into its own box, then composited (transforms apply).
+        if let Some(text) = &node.text {
+            if !text.is_empty() {
+                let color = node.color.unwrap_or((205, 214, 244, 255));
+                let size = node.props.get("font_size").and_then(|s| s.trim().parse::<f32>().ok()).unwrap_or(15.0);
+                let align = node.props.get("align").map(|s| s.as_str()).unwrap_or("left");
+                let weight = TextEngine::weight_of(&node.props);
+                // rasterize text at physical resolution for crisp hidpi output
+                if let Some(sub) = self.text.render(text, node.width * scale, node.height * scale, size * scale, weight, align, color) {
+                    let paint = PixmapPaint {
+                        opacity,
+                        blend_mode: tiny_skia::BlendMode::SourceOver,
+                        quality: if scale == 1.0 && node.rotation.abs() < 1e-4 && (node.scale - 1.0).abs() < 1e-4 {
+                            tiny_skia::FilterQuality::Nearest
+                        } else {
+                            tiny_skia::FilterQuality::Bilinear
+                        },
+                    };
+                    let tt = t.pre_translate(node.x, node.y);
+                    pixmap.draw_pixmap(0, 0, sub.as_ref(), &paint, tt, None);
+                }
+            }
+        }
+
+        // Border: "1px rgba(...)" / "2px #fff".
+        if let Some(border) = node.props.get("border") {
+            if let Some((bw, br, bgc, bb, ba)) = parse_border(border) {
+                let alpha = (ba as f32 * opacity) as u8;
+                if alpha > 2 && bw > 0.1 {
+                    let mut paint = Paint::default();
+                    paint.set_color_rgba8(br, bgc, bb, alpha);
+                    paint.anti_alias = true;
+                    let path = rounded_rect_path(node.rect(), node.radius);
+                    let mut stroke = tiny_skia::Stroke::default();
+                    stroke.width = bw;
+                    pixmap.stroke_path(&path, &paint, &stroke, t, None);
+                }
+            }
+        }
+    }
+
+    fn draw_image(&mut self, node: &ResolvedNode, t: Transform, opacity: f32, pixmap: &mut Pixmap, scale: f32) {
+        let Some(src) = node.props.get("src") else { return };
+        let path = PathBuf::from(src.trim().trim_matches('"').trim_matches('\''));
+        if !self.images.contains_key(&path) {
+            let loaded = Pixmap::load_png(&path).ok();
+            if loaded.is_none() {
+                log::warn!("Image node `{}`: cannot load {}", node.id, path.display());
+            }
+            self.images.insert(path.clone(), loaded);
+        }
+        let Some(Some(img)) = self.images.get(&path) else { return };
+        let (iw, ih) = (img.width() as f32, img.height() as f32);
+        if iw < 1.0 || ih < 1.0 || node.width < 1.0 || node.height < 1.0 {
+            return;
+        }
+        let sx = node.width * scale / iw;
+        let sy = node.height * scale / ih;
+        let paint = PixmapPaint {
+            opacity,
+            blend_mode: tiny_skia::BlendMode::SourceOver,
+            quality: tiny_skia::FilterQuality::Bilinear,
+        };
+        let tt = t.pre_translate(node.x, node.y).pre_scale(sx, sy);
+        pixmap.draw_pixmap(0, 0, img.as_ref(), &paint, tt, None);
+    }
+}
+
+fn fill_rect(pixmap: &mut Pixmap, node: &ResolvedNode, t: Transform, r: u8, g: u8, b: u8, a: u8) {
+    if a == 0 {
+        return;
+    }
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(r, g, b, a);
+    paint.anti_alias = true;
+    let rect = node.rect();
+    if node.radius > 0.5 {
+        let path = rounded_rect_path(rect, node.radius);
+        pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, t, None);
+    } else {
+        pixmap.fill_rect(rect, &paint, t, None);
+    }
+}
+
+fn rounded_rect_path(rect: Rect, radius: f32) -> tiny_skia::Path {
+    let r = radius.min(rect.width() / 2.0).min(rect.height() / 2.0);
+    if r <= 0.0 {
+        return PathBuilder::from_rect(rect);
+    }
+    let mut pb = PathBuilder::new();
+    let (x, y, w, h) = (rect.x(), rect.y(), rect.width(), rect.height());
+    pb.move_to(x + r, y);
+    pb.line_to(x + w - r, y);
+    pb.quad_to(x + w, y, x + w, y + r);
+    pb.line_to(x + w, y + h - r);
+    pb.quad_to(x + w, y + h, x + w - r, y + h);
+    pb.line_to(x + r, y + h);
+    pb.quad_to(x, y + h, x, y + h - r);
+    pb.line_to(x, y + r);
+    pb.quad_to(x, y, x + r, y);
+    pb.close();
+    pb.finish().unwrap()
+}
+
+fn parse_shadow(s: &str) -> Option<(f32, f32, f32, u8, u8, u8, u8)> {
+    // formats: "0 12 32 rgba(0,0,0,0.35)" or "0 8 24 #00000040"
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    if parts.len() < 4 {
+        return None;
+    }
+    let sx = parts[0].parse::<f32>().ok()?;
+    let sy = parts[1].parse::<f32>().ok()?;
+    let blur = parts[2].parse::<f32>().ok()?;
+    let (r, g, b, a) = parse_color_str(&parts[3..].join(" "))?;
+    Some((sx, sy, blur, r, g, b, a))
+}
+
+fn parse_border(s: &str) -> Option<(f32, u8, u8, u8, u8)> {
+    // "1px rgba(255,255,255,0.08)" → width + color; bare color → width 1
+    let mut width = 1.0;
+    let mut color_part = s.trim();
+    if let Some(idx) = s.find("px") {
+        let w_str = s[..idx].trim().split_whitespace().last().unwrap_or("1");
+        width = w_str.parse::<f32>().unwrap_or(1.0);
+        color_part = s[idx + 2..].trim();
+        if color_part.is_empty() {
+            color_part = "rgba(255,255,255,0.08)";
+        }
+    } else if !(s.starts_with("rgba") || s.starts_with("rgb") || s.starts_with('#')) {
+        return None;
+    }
+    let (r, g, b, a) = parse_color_str(color_part)?;
+    Some((width, r, g, b, a))
+}
+
+/// Parse `linear-gradient(<angle>deg, color pos%, color pos%, ...)` with CSS
+/// angle semantics (0° = to top, 90° = to right, 180° = to bottom).
+fn parse_linear_gradient(s: &str, node: &ResolvedNode, opacity: f32) -> Option<tiny_skia::Shader<'static>> {
+    let inner = s.split('(').nth(1)?.split(')').next()?;
+    let parts: Vec<&str> = inner.split(',').map(|p| p.trim()).collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let mut angle: f32 = 180.0;
+    let mut colors: Vec<(SkColor, f32)> = Vec::new();
+    let mut explicit_positions = true;
+    for (i, p) in parts.iter().enumerate() {
+        let p = p.trim();
+        if let Some(deg) = p.strip_suffix("deg") {
+            angle = deg.trim().parse::<f32>().unwrap_or(180.0);
+            continue;
+        }
+        // "color pos%" or "color"
+        let (col_str, pos) = match p.rsplit_once(char::is_whitespace) {
+            Some((c, pct)) if pct.ends_with('%') => {
+                (c.trim(), pct[..pct.len() - 1].trim().parse::<f32>().unwrap_or(0.0) / 100.0)
+            }
+            _ => {
+                explicit_positions = false;
+                (p, i as f32 / (parts.len() - 1).max(1) as f32)
+            }
+        };
+        if let Some((r, g, b, a)) = parse_color_str(col_str) {
+            colors.push((SkColor::from_rgba8(r, g, b, (a as f32 * opacity) as u8), pos));
+        }
+    }
+    if colors.len() < 2 {
+        return None;
+    }
+    if !explicit_positions {
+        // distribute evenly if author omitted percentages
+        let n = colors.len();
+        for (i, c) in colors.iter_mut().enumerate() {
+            c.1 = i as f32 / (n - 1).max(1) as f32;
+        }
+    }
+    colors.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let stops: Vec<GradientStop> = colors.into_iter().map(|(c, p)| GradientStop::new(p.clamp(0.0, 1.0), c)).collect();
+
+    // CSS gradient line through the node center.
+    let rad = angle.to_radians();
+    let (dx, dy) = (rad.sin(), -rad.cos());
+    let half = (node.width * dx.abs() + node.height * dy.abs()) / 2.0;
+    let cx = node.x + node.width / 2.0;
+    let cy = node.y + node.height / 2.0;
+    let start = tiny_skia::Point::from_xy(cx - dx * half, cy - dy * half);
+    let end = tiny_skia::Point::from_xy(cx + dx * half, cy + dy * half);
+    LinearGradient::new(start, end, stops, SpreadMode::Pad, Transform::identity())
+}
+
+/// Extract a solid `Color` from a resolved prop, or `None` for gradients.
+pub fn solid_color(s: &str) -> Option<Color> {
+    let t = s.trim();
+    if t.starts_with("linear-gradient") || t.starts_with("radial-gradient") {
+        return None;
+    }
+    parse_color_str(t)
+}

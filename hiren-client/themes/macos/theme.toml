@@ -1,0 +1,239 @@
+# macOS — restraint, floating, blur, spring
+# Translucent card, layered shadows, spring selector, calm hierarchy.
+# No harsh colors, 8pt, SF-like.
+
+[meta]
+name = "macos"
+description = "macOS — translucent floating card, layered shadows, spring selector, calm"
+author = "hiren"
+
+[window]
+width = 640
+height = 480
+transparent = true
+
+# Backdrop shadow — large, soft
+[[nodes]]
+id = "shadow"
+type = "Rectangle"
+x = "16"
+y = "16"
+width = "window.width - 32"
+height = "window.height - 32"
+props = { background = "transparent", radius = "20", shadow = "0 24 48 rgba(0,0,0,0.22)" }
+
+# Card — ultra-light translucent, blur hint via alpha
+[[nodes]]
+id = "card"
+type = "Rectangle"
+x = "20"
+y = "20"
+width = "window.width - 40"
+height = "window.height - 40"
+props = { background = "rgba(255,255,255,0.82)", radius = "18", border = "1px rgba(0,0,0,0.06)", shadow = "0 8 24 rgba(0,0,0,0.08)" }
+animate = [{ property = "y", from = 24, duration_ms = 460, easing = "ease_out_expo" }, { property = "opacity", from = 0, duration_ms = 300, easing = "ease_out_quad" }]
+
+# Subtle inner top highlight
+[[nodes]]
+id = "card_highlight"
+type = "Rectangle"
+x = "20"
+y = "20"
+width = "window.width - 40"
+height = "1"
+props = { background = "rgba(255,255,255,0.9)", radius = "18" }
+
+# Search field — pill, soft inner
+[[nodes]]
+id = "search_field"
+type = "Rectangle"
+x = "36"
+y = "36"
+width = "window.width - 72"
+height = "48"
+props = { background = "rgba(0,0,0,0.05)", radius = "12", border = "1px rgba(0,0,0,0.06)" }
+
+[[nodes]]
+id = "search_field_focus"
+type = "Rectangle"
+x = "36"
+y = "36"
+width = "window.width - 72"
+height = "48"
+props = { background = "transparent", radius = "12", border = "1px rgba(0,122,255,0.35)" }
+visible = "launcher.query != ''"
+
+[[nodes]]
+id = "search_icon"
+type = "Text"
+x = "48"
+y = "36"
+width = "28"
+height = "48"
+text = "⌕"
+props = { color = "rgba(0,0,0,0.32)", font_size = "18", align = "center" }
+
+[[nodes]]
+id = "search_text"
+type = "Text"
+x = "76"
+y = "36"
+width = "window.width - 148"
+height = "48"
+text = "launcher.query"
+props = { color = "#1d1d1f", font_size = "17", font_weight = "400", align = "left" }
+
+# Caret — soft blue, measured after the query, gentle blink
+[[nodes]]
+id = "caret"
+type = "Rectangle"
+x = "77 + text_width(launcher.query, 17)"
+y = "46"
+width = "2"
+height = "28"
+props = { background = "rgba(0,122,255,0.75)", radius = "1" }
+opacity = "sin(time * 4) > -0.2 ? 1 : 0.1"
+
+[[nodes]]
+id = "search_placeholder"
+type = "Text"
+x = "76"
+y = "36"
+width = "window.width - 148"
+height = "48"
+text = "Search"
+visible = "launcher.query == ''"
+props = { color = "rgba(0,0,0,0.32)", font_size = "17", align = "left" }
+
+[[nodes]]
+id = "search_shortcut"
+type = "Text"
+x = "window.width - 72"
+y = "36"
+width = "32"
+height = "48"
+text = "⌘K"
+visible = "launcher.query == ''"
+props = { color = "rgba(0,0,0,0.22)", font_size = "11", align = "center" }
+
+# Divider — hairline
+[[nodes]]
+id = "divider"
+type = "Rectangle"
+x = "36"
+y = "96"
+width = "window.width - 72"
+height = "1"
+props = { background = "rgba(0,0,0,0.06)" }
+visible = "launcher.results_count > 0"
+
+# Selector — spring, white, soft shadow, 1px border, behind text
+[[nodes]]
+id = "selector"
+type = "Rectangle"
+x = "36"
+y = "launcher.selected_index * 52 + 108"
+width = "window.width - 72"
+height = "44"
+props = { background = "white", radius = "10", border = "1px rgba(0,0,0,0.05)", shadow = "0 2 12 rgba(0,0,0,0.08)" }
+visible = "launcher.results_count > 0"
+animate = [{ property = "y", duration_ms = 340, easing = "spring" }]
+
+# Results (virtualized, scrolls with the selection)
+[[nodes]]
+id = "results"
+type = "Repeater"
+x = "36"
+y = "108 - clamp(launcher.selected_index - 5, 0, launcher.results_count) * 52"
+width = "window.width - 72"
+height = "floor((window.height - 28 - 108) / 52) * 52"
+model = "launcher.results"
+delegate = "mac_row"
+props = { gap = "8", item_height = "44", layout = "vertical", clip_y = "108" }
+
+# Footer — subtle
+[[nodes]]
+id = "footer"
+type = "Text"
+x = "36"
+y = "window.height - 28"
+width = "window.width - 72"
+height = "14"
+text = "↕  navigate  •  ↵  open  •  esc  close"
+props = { color = "rgba(0,0,0,0.28)", font_size = "10", align = "center" }
+
+[components.mac_row]
+  # calm staggered entrance
+  [[components.mac_row.animate]]
+  property = "opacity"
+  from = 0
+  duration_ms = 300
+  delay = "index * 35"
+  easing = "ease_out_quad"
+  [[components.mac_row.animate]]
+  property = "y"
+  from = 10
+  duration_ms = 320
+  delay = "index * 35"
+  easing = "ease_out_cubic"
+
+  [[components.mac_row.nodes]]
+  id = "row_bg"
+  type = "Rectangle"
+  x = "0"
+  y = "0"
+  width = "568"
+  height = "44"
+  props = { background = "transparent", radius = "10" }
+  on_click = "activate(index)"
+
+  [[components.mac_row.nodes]]
+  id = "row_icon"
+  type = "Rectangle"
+  x = "10"
+  y = "10"
+  width = "24"
+  height = "24"
+  props = { background = "rgba(0,122,255,0.10)", radius = "6" }
+
+  [[components.mac_row.nodes]]
+  id = "row_icon_text"
+  type = "Text"
+  x = "10"
+  y = "10"
+  width = "24"
+  height = "24"
+  text = "initial(item_name)"
+  props = { color = "rgba(0,122,255,0.9)", font_size = "12", font_weight = "600", align = "center" }
+
+  [[components.mac_row.nodes]]
+  id = "row_name"
+  type = "Text"
+  x = "42"
+  y = "2"
+  width = "460"
+  height = "22"
+  text = "item_name"
+  props = { color = "#1d1d1f", font_size = "14", font_weight = "400", align = "left" }
+
+  [[components.mac_row.nodes]]
+  id = "row_sub"
+  type = "Text"
+  x = "42"
+  y = "24"
+  width = "460"
+  height = "14"
+  text = "item_id"
+  visible = "item_description == ''"
+  props = { color = "rgba(0,0,0,0.38)", font_size = "11", align = "left" }
+
+  [[components.mac_row.nodes]]
+  id = "row_desc"
+  type = "Text"
+  x = "42"
+  y = "24"
+  width = "460"
+  height = "14"
+  text = "item_description"
+  visible = "item_description != ''"
+  props = { color = "rgba(0,0,0,0.38)", font_size = "11", align = "left" }

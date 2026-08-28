@@ -1,0 +1,376 @@
+# Atlus — game interface, original design
+# Persona/Metaphor *motion language*: high contrast, diagonal energy, layered
+# graphics, staggered entrances, spring selector, oversized preview panel.
+# Black/white/red; all structural, no copyrighted assets.
+
+[meta]
+name = "atlus"
+description = "Game-like — diagonal transforms, layered graphics, spring selector, oversized preview"
+author = "hiren"
+
+[window]
+width = 840
+height = 520
+transparent = true
+
+# Base — near-black with subtle vertical gradient
+[[nodes]]
+id = "bg"
+type = "Rectangle"
+x = "0"
+y = "0"
+width = "window.width"
+height = "window.height"
+props = { background = "linear-gradient(180deg, #111116 0%, #0a0a0f 100%)" }
+
+# Top accent — 4px red bar
+[[nodes]]
+id = "accent_bar"
+type = "Rectangle"
+x = "0"
+y = "0"
+width = "window.width"
+height = "4"
+props = { background = "#ff2a6d", shadow = "0 4 12 rgba(255,42,109,0.45)" }
+animate = [{ property = "width", from = 0, duration_ms = 500, easing = "ease_out_expo" }]
+
+# Diagonal decorative stripes — rotated rects (transform showcase)
+[[nodes]]
+id = "stripe_1"
+type = "Rectangle"
+x = "620"
+y = "-60"
+width = "3"
+height = "220"
+rotation = "35"
+props = { background = "rgba(255,42,109,0.30)" }
+animate = [{ property = "opacity", from = 0, duration_ms = 600, delay = 150, easing = "ease_out_quad" }]
+
+[[nodes]]
+id = "stripe_2"
+type = "Rectangle"
+x = "650"
+y = "-60"
+width = "2"
+height = "220"
+rotation = "35"
+props = { background = "rgba(255,255,255,0.10)" }
+animate = [{ property = "opacity", from = 0, duration_ms = 600, delay = 220, easing = "ease_out_quad" }]
+
+[[nodes]]
+id = "stripe_3"
+type = "Rectangle"
+x = "680"
+y = "-60"
+width = "1"
+height = "220"
+rotation = "35"
+props = { background = "rgba(255,42,109,0.16)" }
+animate = [{ property = "opacity", from = 0, duration_ms = 600, delay = 290, easing = "ease_out_quad" }]
+
+# Header — tilted title, right-aligned version tag
+[[nodes]]
+id = "title"
+type = "Text"
+x = "28"
+y = "16"
+width = "300"
+height = "20"
+text = "H I R E N  //  SELECTOR"
+rotation = "-1.2"
+props = { color = "#ff2a6d", font_size = "11", font_weight = "700", align = "left" }
+
+[[nodes]]
+id = "subtitle"
+type = "Text"
+x = "560"
+y = "16"
+width = "252"
+height = "20"
+text = "ATLAS  v0.1.0"
+props = { color = "rgba(255,255,255,0.35)", font_size = "10", align = "right" }
+
+# Search — heavy bordered card, inner field, red slash mark (slightly tilted)
+[[nodes]]
+id = "search_card"
+type = "Rectangle"
+x = "28"
+y = "44"
+width = "788"
+height = "64"
+props = { background = "rgba(255,255,255,0.05)", border = "1px rgba(255,42,109,0.9)", shadow = "0 8 24 rgba(0,0,0,0.4)" }
+animate = [{ property = "y", from = 30, duration_ms = 320, delay = 60, easing = "ease_out_cubic" }, { property = "opacity", from = 0, duration_ms = 240, delay = 60, easing = "ease_out_quad" }]
+
+[[nodes]]
+id = "search_card_inner"
+type = "Rectangle"
+x = "30"
+y = "46"
+width = "784"
+height = "60"
+props = { background = "rgba(0,0,0,0.35)" }
+
+[[nodes]]
+id = "search_slash"
+type = "Rectangle"
+x = "46"
+y = "56"
+width = "6"
+height = "40"
+rotation = "14"
+props = { background = "#ff2a6d" }
+
+[[nodes]]
+id = "search_text"
+type = "Text"
+x = "64"
+y = "44"
+width = "660"
+height = "64"
+text = "launcher.query"
+props = { color = "white", font_size = "24", font_weight = "700", align = "left" }
+
+# Caret — heavy block cursor, blinking
+[[nodes]]
+id = "search_caret"
+type = "Rectangle"
+x = "66 + text_width(launcher.query, 24)"
+y = "62"
+width = "12"
+height = "28"
+props = { background = "#ff2a6d" }
+opacity = "sin(time * 6) > 0 ? 0.9 : 0.2"
+
+[[nodes]]
+id = "search_placeholder"
+type = "Text"
+x = "64"
+y = "44"
+width = "660"
+height = "64"
+text = "ENTER TARGET —"
+visible = "launcher.query == ''"
+props = { color = "rgba(255,255,255,0.32)", font_size = "24", font_weight = "700", align = "left" }
+
+[[nodes]]
+id = "search_hint"
+type = "Text"
+x = "700"
+y = "44"
+width = "100"
+height = "64"
+text = "launcher.results_count"
+visible = "launcher.results_count > 0"
+props = { color = "rgba(255,255,255,0.35)", font_size = "11", align = "right" }
+
+# Left column — results (virtualized, scrolls with the selection)
+[[nodes]]
+id = "results"
+type = "Repeater"
+x = "28"
+y = "128 - clamp(launcher.selected_index - 3, 0, launcher.results_count) * 66"
+width = "520"
+height = "floor((window.height - 32 - 128) / 66) * 66"
+model = "launcher.results"
+delegate = "atlus_row"
+props = { gap = "10", item_height = "56", layout = "vertical", clip_y = "128" }
+
+# Independent selector — behind rows, taller than a row, real spring
+[[nodes]]
+id = "selector"
+type = "Rectangle"
+x = "24"
+y = "launcher.selected_index * 66 + 124"
+width = "528"
+height = "64"
+props = { background = "rgba(255,42,109,0.14)", border = "1px #ff2a6d", shadow = "0 4 16 rgba(255,42,109,0.25)" }
+visible = "launcher.results_count > 0"
+z = -1
+animate = [{ property = "y", duration_ms = 520, easing = "spring", spring = { stiffness = 260, damping = 20, mass = 1 } }]
+
+[[nodes]]
+id = "selector_slash"
+type = "Rectangle"
+x = "22"
+y = "launcher.selected_index * 66 + 124"
+width = "8"
+height = "64"
+rotation = "10"
+props = { background = "#ff2a6d" }
+visible = "launcher.results_count > 0"
+animate = [{ property = "y", duration_ms = 520, easing = "spring", spring = { stiffness = 260, damping = 20, mass = 1 } }]
+
+# Right preview — large panel that slides in; bound to the selected result
+[[nodes]]
+id = "preview_shadow"
+type = "Rectangle"
+x = "572"
+y = "128"
+width = "240"
+height = "320"
+props = { background = "rgba(0,0,0,0.45)", shadow = "0 12 32 rgba(0,0,0,0.5)" }
+visible = "launcher.results_count > 0"
+animate = [{ property = "x", from = "window.width + 40", duration_ms = 380, delay = 120, easing = "ease_out_expo" }]
+
+[[nodes]]
+id = "preview_card"
+type = "Rectangle"
+x = "576"
+y = "128"
+width = "236"
+height = "316"
+rotation = "0.6"
+props = { background = "rgba(255,255,255,0.06)", border = "1px rgba(255,255,255,0.10)" }
+visible = "launcher.results_count > 0"
+animate = [{ property = "x", from = "window.width + 36", duration_ms = 380, delay = 130, easing = "ease_out_expo" }]
+
+[[nodes]]
+id = "preview_top"
+type = "Rectangle"
+x = "576"
+y = "128"
+width = "236"
+height = "4"
+props = { background = "#ff2a6d" }
+visible = "launcher.results_count > 0"
+animate = [{ property = "x", from = "window.width + 36", duration_ms = 380, delay = 130, easing = "ease_out_expo" }]
+
+[[nodes]]
+id = "preview_label"
+type = "Text"
+x = "592"
+y = "144"
+width = "204"
+height = "14"
+text = "SELECTED"
+props = { color = "rgba(255,42,109,0.95)", font_size = "10", font_weight = "700", align = "left" }
+
+[[nodes]]
+id = "preview_name"
+type = "Text"
+x = "592"
+y = "162"
+width = "204"
+height = "56"
+text = "launcher.selected_result.name"
+props = { color = "white", font_size = "18", font_weight = "700", align = "left" }
+
+[[nodes]]
+id = "preview_id"
+type = "Text"
+x = "592"
+y = "224"
+width = "204"
+height = "14"
+text = "launcher.selected_result.id"
+props = { color = "rgba(255,255,255,0.45)", font_size = "10", align = "left" }
+
+[[nodes]]
+id = "preview_exec"
+type = "Text"
+x = "592"
+y = "244"
+width = "204"
+height = "28"
+text = "launcher.selected_result.exec"
+props = { color = "rgba(255,255,255,0.55)", font_size = "9", align = "left" }
+
+[[nodes]]
+id = "preview_desc"
+type = "Text"
+x = "592"
+y = "276"
+width = "204"
+height = "40"
+text = "launcher.selected_result.description"
+visible = "launcher.selected_result.description != ''"
+props = { color = "rgba(255,255,255,0.45)", font_size = "11", align = "left" }
+
+# Decorative elements that react to selection (independent objects)
+[[nodes]]
+id = "deco"
+type = "Rectangle"
+x = "556"
+y = "launcher.selected_index * 14 + 128"
+width = "2"
+height = "160"
+props = { background = "rgba(255,42,109,0.28)" }
+visible = "launcher.results_count > 0"
+animate = [{ property = "y", duration_ms = 460, easing = "ease_out_cubic" }]
+
+[[nodes]]
+id = "deco_dot"
+type = "Rectangle"
+x = "552"
+y = "launcher.selected_index * 14 + 200"
+width = "10"
+height = "10"
+props = { background = "#ff2a6d", radius = "5" }
+visible = "launcher.results_count > 0"
+animate = [{ property = "y", duration_ms = 460, easing = "ease_out_cubic" }]
+
+# Footer
+[[nodes]]
+id = "footer"
+type = "Text"
+x = "28"
+y = "488"
+width = "520"
+height = "14"
+text = "TAB / ARROWS  •  ENTER LAUNCH  •  ESC CLOSE"
+props = { color = "rgba(255,255,255,0.28)", font_size = "9", align = "left" }
+
+[components.atlus_row]
+  # staggered entrance: slide in from the left + fade
+  [[components.atlus_row.animate]]
+  property = "x"
+  from = -40
+  duration_ms = 320
+  delay = "index * 55"
+  easing = "ease_out_expo"
+  [[components.atlus_row.animate]]
+  property = "opacity"
+  from = 0
+  duration_ms = 260
+  delay = "index * 55"
+  easing = "ease_out_quad"
+
+  [[components.atlus_row.nodes]]
+  id = "row_bg"
+  type = "Rectangle"
+  x = "0"
+  y = "0"
+  width = "520"
+  height = "56"
+  props = { background = "is_selected ? rgba(255,42,109,0.10) : rgba(255,255,255,0.035)", border = "1px rgba(255,255,255,0.06)" }
+  on_click = "activate(index)"
+
+  [[components.atlus_row.nodes]]
+  id = "row_index"
+  type = "Text"
+  x = "10"
+  y = "0"
+  width = "28"
+  height = "56"
+  text = "index"
+  props = { color = "rgba(255,42,109,0.85)", font_size = "11", font_weight = "700", align = "center" }
+
+  [[components.atlus_row.nodes]]
+  id = "row_name"
+  type = "Text"
+  x = "44"
+  y = "6"
+  width = "464"
+  height = "22"
+  text = "item_name"
+  props = { color = "white", font_size = "14", font_weight = "600", align = "left" }
+
+  [[components.atlus_row.nodes]]
+  id = "row_id"
+  type = "Text"
+  x = "44"
+  y = "28"
+  width = "464"
+  height = "14"
+  text = "item_id"
+  props = { color = "rgba(255,255,255,0.38)", font_size = "10", align = "left" }

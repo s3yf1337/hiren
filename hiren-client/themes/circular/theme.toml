@@ -1,0 +1,204 @@
+# Circular — radial, perfect circle, selector ring
+# Search centered, results on orbit radius 170, selector is spring ring, pulse dot.
+# Proves free positioning + cos/sin bindings + independent selector.
+
+[meta]
+name = "circular"
+description = "Circular — search centered, 5 items on 170 orbit, spring ring selector"
+author = "hiren"
+
+[window]
+width = 700
+height = 700
+transparent = true
+
+# Backdrop — dark with subtle vignette via gradient + outer shadow
+[[nodes]]
+id = "bg"
+type = "Rectangle"
+x = "8"
+y = "8"
+width = "window.width - 16"
+height = "window.height - 16"
+props = { background = "linear-gradient(180deg, #1a1a24 0%, #0e0e14 100%)", radius = "24", shadow = "0 20 48 rgba(0,0,0,0.45)", border = "1px rgba(255,255,255,0.06)" }
+
+# Orbit guide — faint circle
+[[nodes]]
+id = "orbit_guide"
+type = "Rectangle"
+x = "window.width / 2 - 170"
+y = "window.height / 2 - 170"
+width = "340"
+height = "340"
+props = { background = "transparent", radius = "170", border = "1px rgba(255,255,255,0.06)" }
+
+# Center group — search
+[[nodes]]
+id = "center_shadow"
+type = "Rectangle"
+x = "window.width / 2 - 140"
+y = "window.height / 2 - 36"
+width = "280"
+height = "72"
+props = { background = "transparent", radius = "36", shadow = "0 12 32 rgba(0,0,0,0.35)" }
+
+[[nodes]]
+id = "center_bg"
+type = "Rectangle"
+x = "window.width / 2 - 140"
+y = "window.height / 2 - 36"
+width = "280"
+height = "72"
+props = { background = "rgba(255,255,255,0.07)", radius = "36", border = "1px rgba(255,255,255,0.12)" }
+
+[[nodes]]
+id = "center_focus"
+type = "Rectangle"
+x = "window.width / 2 - 140"
+y = "window.height / 2 - 36"
+width = "280"
+height = "72"
+props = { background = "transparent", radius = "36", border = "1px #89b4fa" }
+visible = "launcher.query != ''"
+
+[[nodes]]
+id = "center_text"
+type = "Text"
+x = "window.width / 2 - 116"
+y = "window.height / 2 - 18"
+width = "232"
+height = "36"
+text = "launcher.query"
+props = { color = "white", font_size = "18", font_weight = "600", align = "left" }
+
+# Caret — measured after the query, blinking
+[[nodes]]
+id = "center_caret"
+type = "Rectangle"
+x = "window.width / 2 - 115 + text_width(launcher.query, 18)"
+y = "window.height / 2 - 10"
+width = "2"
+height = "20"
+props = { background = "#89b4fa", radius = "1" }
+opacity = "sin(time * 5) > 0 ? 1 : 0.15"
+
+[[nodes]]
+id = "center_ph"
+type = "Text"
+x = "window.width / 2 - 120"
+y = "window.height / 2 - 18"
+width = "240"
+height = "36"
+text = "Search"
+visible = "launcher.query == ''"
+props = { color = "rgba(255,255,255,0.38)", font_size = "16", align = "center" }
+
+[[nodes]]
+id = "center_count"
+type = "Text"
+x = "window.width / 2 - 40"
+y = "window.height / 2 + 42"
+width = "80"
+height = "14"
+text = "launcher.results_count"
+visible = "launcher.results_count > 0"
+props = { color = "rgba(137,180,250,0.7)", font_size = "11", font_weight = "600", align = "center" }
+
+# Circular repeater — 5 items, radius 170, centered at window/2
+[[nodes]]
+id = "orbit"
+type = "Repeater"
+x = "window.width / 2"
+y = "window.height / 2"
+width = "0"
+height = "0"
+model = "launcher.results"
+delegate = "circular_item"
+props = { layout = "circular", radius = "170", gap = "0", item_height = "52" }
+
+# Selector — independent ring that orbits with the selected item.
+# Angle step derives from results_count, so any result count works.
+[[nodes]]
+id = "selector"
+type = "Rectangle"
+x = "window.width / 2 + 170 * cos(launcher.selected_index * tau / launcher.results_count - pi / 2) - 56"
+y = "window.height / 2 + 170 * sin(launcher.selected_index * tau / launcher.results_count - pi / 2) - 28"
+width = "112"
+height = "56"
+props = { background = "rgba(137,180,250,0.13)", radius = "16", border = "1px #89b4fa", shadow = "0 4 16 rgba(137,180,250,0.25)" }
+visible = "launcher.results_count > 0"
+animate = [{ property = "x", duration_ms = 560, easing = "spring", spring = { stiffness = 140, damping = 17, mass = 1 } }, { property = "y", duration_ms = 560, easing = "spring", spring = { stiffness = 140, damping = 17, mass = 1 } }]
+
+# Orbit dot — slightly outside the ring so it never covers item text
+[[nodes]]
+id = "selector_dot"
+type = "Rectangle"
+x = "window.width / 2 + 218 * cos(launcher.selected_index * tau / launcher.results_count - pi / 2) - 4"
+y = "window.height / 2 + 218 * sin(launcher.selected_index * tau / launcher.results_count - pi / 2) - 4"
+width = "8"
+height = "8"
+props = { background = "#89b4fa", radius = "4", shadow = "0 0 10 rgba(137,180,250,0.8)" }
+visible = "launcher.results_count > 0"
+animate = [{ property = "x", duration_ms = 560, easing = "spring", spring = { stiffness = 140, damping = 17, mass = 1 } }, { property = "y", duration_ms = 560, easing = "spring", spring = { stiffness = 140, damping = 17, mass = 1 } }]
+
+# Center pulse — breathing with time, behind the search pill
+[[nodes]]
+id = "pulse"
+type = "Rectangle"
+x = "window.width / 2 - 9"
+y = "window.height / 2 - 9"
+width = "18"
+height = "18"
+scale = "1 + 0.18 * sin(time * 2)"
+props = { background = "rgba(137,180,250,0.55)", radius = "9" }
+z = -1
+visible = "launcher.results_count > 0"
+
+# Hint
+[[nodes]]
+id = "hint"
+type = "Text"
+x = "window.width / 2 - 120"
+y = "window.height - 32"
+width = "240"
+height = "14"
+text = "Arrows  •  Enter  •  Esc"
+props = { color = "rgba(255,255,255,0.28)", font_size = "10", align = "center" }
+
+[components.circular_item]
+  # entrance: items bloom outward from the center, staggered
+  [[components.circular_item.animate]]
+  property = "opacity"
+  from = 0
+  duration_ms = 320
+  delay = "index * 60"
+  easing = "ease_out_quad"
+  [[components.circular_item.animate]]
+  property = "scale"
+  from = 0.4
+  duration_ms = 380
+  delay = "index * 60"
+  easing = "ease_out_back"
+
+  [[components.circular_item.nodes]]
+  id = "item_bg"
+  type = "Rectangle"
+  x = "-52"
+  y = "-26"
+  width = "104"
+  height = "52"
+  props = { background = "is_selected ? rgba(137,180,250,0.18) : rgba(255,255,255,0.06)", radius = "12", border = "is_selected ? 1px #89b4fa : 1px rgba(255,255,255,0.08)", shadow = "0 4 12 rgba(0,0,0,0.25)" }
+  on_click = "activate(index)"
+  # selected item pops
+  animate = [{ property = "scale", duration_ms = 420, easing = "spring", spring = { stiffness = 260, damping = 18, mass = 1 } }]
+  scale = "is_selected ? 1.14 : 1.0"
+
+  [[components.circular_item.nodes]]
+  id = "item_text"
+  type = "Text"
+  x = "-46"
+  y = "-14"
+  width = "92"
+  height = "28"
+  text = "item_name"
+  props = { color = "white", font_size = "11", font_weight = "600", align = "center" }

@@ -1,219 +1,275 @@
-//! hiren-client — графический клиент лаунчера на GTK4 + layer-shell.
+//! hiren-client — declarative UI runtime launcher.
 //!
-//! Точка входа: создаёт GtkApplication, загружает CSS, строит UI,
-//! запускает главный цикл.
+//! Launcher logic (IPC, state, freq, modes) + UI runtime (scene graph,
+//! bindings, layout, animation, rendering). No GTK, no hardcoded UI:
+//! the interface is a TOML scene graph resolved against launcher state.
 
-mod config;
-mod freq;
-mod ipc;
-mod modes;
-mod ui;
-
-use gtk4 as gtk;
-use gtk::gdk;
-use gtk::glib;
-use gtk::prelude::*;
-use gtk4_layer_shell::{KeyboardMode, Layer, LayerShell};
-use std::path::PathBuf;
+use anyhow::Result;
+use hiren_client::config::{self, LauncherConfig};
+use hiren_client::frontend::AppCore;
+use hiren_client::launcher::{LauncherState, ObservableState};
+use hiren_client::ui_runtime::{theme::Theme, UiRuntime};
+use hiren_client::{window};
 use std::rc::Rc;
 
-fn main() -> glib::ExitCode {
-    let app = gtk::Application::builder()
-        .application_id("com.hiren.client")
-        .build();
+fn main() -> Result<()> {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    let args: Vec<String> = std::env::args().skip(1).collect();
 
-    app.connect_activate(move |app| {
-        if let Err(e) = activate(app) {
-            eprintln!("[hiren-client] Fatal: {e:#}");
-            app.quit();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_help();
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--list-themes") {
+        for t in config::available_themes() {
+            println!("{t}");
         }
-    });
-
-    app.run()
-}
-
-fn activate(app: &gtk::Application) -> anyhow::Result<()> {
-    // --- Загрузка конфига ---
-    let config = config::Config::load();
-    // Захватываем режим клавиатуры до move config в UiContext::build
-    let keyboard_mode = config.keyboard_mode;
-
-    // --- Загрузка CSS ---
-    load_css();
-
-    // --- Построение UI ---
-    let ctx = ui::UiContext::build(app, config);
-
-    // Достаём окно (дешёвый clone — инкремент GObject refcount)
-    let window = ctx.window_launcher.window().clone();
-
-    // Сохраняем ctx в window как user-data, чтобы Rc жил пока живо окно.
-    unsafe {
-        window.set_data("hiren-ctx", Rc::clone(&ctx));
+        return Ok(());
     }
 
-    // При разрушении окна явно завершаем приложение
-    let app_ref = app.clone();
-    window.connect_destroy(move |_| {
-        eprintln!("[hiren-client] Window destroyed, quitting");
-        app_ref.quit();
+    let theme_override = arg_value(&args, "--theme");
+    let size_override = match (
+        arg_value(&args, "--width").and_then(|v| v.parse::<u32>().ok()),
+        arg_value(&args, "--height").and_then(|v| v.parse::<u32>().ok()),
+    ) {
+        (Some(w), Some(h)) => Some((w, h)),
+        _ => None,
+    };
+    let reload = args.iter().any(|a| a == "--reload");
+    let no_layer_shell = args.iter().any(|a| a == "--no-layer-shell");
+
+    let mut cfg = LauncherConfig::load();
+    if let Some(t) = theme_override.clone() {
+        cfg.theme = t;
+    }
+
+    // Resolve + load theme with clear diagnostics; fall back so a window still appears.
+    let theme_path = cfg.theme_path();
+    let (theme, theme_error) = match Theme::load_from_dir(&theme_path) {
+        Ok(t) => (t, None),
+        Err(e) => (Theme::fallback(), Some(format!("{}: {e:#}", theme_path.display()))),
+    };
+
+    if args.iter().any(|a| a == "--validate-themes" || a == "--check-themes") {
+        return validate_themes();
+    }
+    if args.iter().any(|a| a == "--screenshot" || a.starts_with("--screenshot=")) {
+        return screenshot_mode(theme, &cfg, &args, size_override);
+    }
+
+    if let Some(err) = &theme_error {
+        eprintln!("[hiren-client] WARNING: failed to load theme {err}");
+        eprintln!("[hiren-client] WARNING: using built-in fallback theme");
+    }
+
+    let state = ObservableState::new(LauncherState::new());
+    let bridge = hiren_client::ui_runtime::state_bridge::SearchBridge::new(&cfg);
+    let core = AppCore::new(theme, state, bridge, cfg, size_override, reload);
+
+    // Backend selection: real layer-shell on Wayland when available,
+    // otherwise the portable winit toplevel (also used for X11).
+    #[cfg(feature = "layer-shell")]
+    {
+        if !no_layer_shell && std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            match hiren_client::wayland::run(core) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    eprintln!("[hiren-client] layer-shell backend failed ({e:#}); falling back to winit");
+                    // Recreate what run() consumed: cheap enough at startup.
+                    let cfg2 = LauncherConfig::load();
+                    let mut cfg2 = cfg2;
+                    if let Some(t) = theme_override.clone() {
+                        cfg2.theme = t;
+                    }
+                    let theme2 = Theme::load_from_dir(&cfg2.theme_path()).unwrap_or_else(|_| Theme::fallback());
+                    let state2 = ObservableState::new(LauncherState::new());
+                    let bridge2 = hiren_client::ui_runtime::state_bridge::SearchBridge::new(&cfg2);
+                    let core2 = AppCore::new(theme2, state2, bridge2, cfg2, size_override, reload);
+                    return window::run(core2);
+                }
+            }
+        }
+    }
+    let _ = no_layer_shell;
+    window::run(core)
+}
+
+fn arg_value(args: &[String], flag: &str) -> Option<String> {
+    for (i, a) in args.iter().enumerate() {
+        if a == flag && i + 1 < args.len() {
+            return Some(args[i + 1].clone());
+        }
+        if let Some(rest) = a.strip_prefix(&format!("{flag}=")) {
+            return Some(rest.to_string());
+        }
+    }
+    None
+}
+
+fn print_help() {
+    println!("hiren-client — declarative UI launcher");
+    println!();
+    println!("Usage: hiren-client [options]");
+    println!("  --theme <name>        theme name (built-in or ~/.config/hiren/themes/<name>)");
+    println!("  --width <px> --height <px>  override window size");
+    println!("  --validate-themes     load + resolve + render all built-in themes, report issues");
+    println!("  --list-themes         list available themes");
+    println!("  --screenshot [theme]  render a theme offscreen to a PNG (no window)");
+    println!("      --out <path>      output file (default /tmp/hiren-<theme>.png)");
+    println!("      --query <text>    perform a real search instead of demo results");
+    println!("  --no-layer-shell      force the winit toplevel backend");
+    println!("  --reload              poll theme.toml for changes (dev convenience)");
+    println!();
+    println!("Themes are TOML scene graphs under hiren-client/themes/ or ~/.config/hiren/themes/.");
+}
+
+// ---------------------------------------------------------------------------
+// Screenshot mode — headless validation: state → runtime → renderer → PNG
+// ---------------------------------------------------------------------------
+
+fn demo_state(state: &Rc<ObservableState>) {
+    let entries = vec![
+        hiren_shared::AppEntry::drun(
+            "firefox".into(),
+            "Firefox".into(),
+            "firefox".into(),
+            Some("Browse the Web".into()),
+            "Internet WWW Browser".into(),
+        ),
+        hiren_shared::AppEntry::drun(
+            "org.gnome.Files".into(),
+            "Files".into(),
+            "nautilus".into(),
+            Some("Access and organize files".into()),
+            "folder manager explore disk".into(),
+        ),
+        hiren_shared::AppEntry::run("foot".into(), "Foot terminal".into(), "foot".into()),
+        hiren_shared::AppEntry::drun(
+            "code".into(),
+            "Visual Studio Code".into(),
+            "code".into(),
+            Some("Code Editing. Redefined.".into()),
+            "editor ide development".into(),
+        ),
+        hiren_shared::AppEntry::run("calc".into(), "Calculator 4*7".into(), "gnome-calculator".into()),
+    ];
+    state.update(|s| {
+        s.query = "f".into();
+        s.set_results(entries);
+        s.selected_index = 0;
     });
+}
 
-    // --- Layer-shell (Wayland-оверлей) ---
-    setup_layer_shell(&window, keyboard_mode);
+fn screenshot_mode(theme: Theme, cfg: &LauncherConfig, args: &[String], size_override: Option<(u32, u32)>) -> Result<()> {
+    let theme_name = arg_value(args, "--screenshot").unwrap_or_else(|| cfg.theme.clone());
+    let out = arg_value(args, "--out").unwrap_or_else(|| format!("/tmp/hiren-{theme_name}.png"));
+    let query = arg_value(args, "--query");
+    let settle_ms: u64 = arg_value(args, "--settle-ms").and_then(|v| v.parse().ok()).unwrap_or(900);
 
-    // --- Показываем окно ---
-    ctx.window_launcher.present();
+    // `--screenshot <name>` selects the theme (user themes take precedence).
+    let theme = if theme_name == cfg.theme {
+        theme
+    } else {
+        let mut cfg2 = cfg.clone();
+        cfg2.theme = theme_name.clone();
+        let path = cfg2.theme_path();
+        match Theme::load_from_dir(&path) {
+            Ok(t) => t,
+            Err(e) => anyhow::bail!("cannot load theme `{theme_name}` from {}: {e:#}", path.display()),
+        }
+    };
 
-    // Автоматический фокус на поле ввода
-    ctx.window_launcher.search_input.widget().grab_focus();
+    let state = ObservableState::new(LauncherState::new());
+    match &query {
+        Some(q) => {
+            let bridge = hiren_client::ui_runtime::state_bridge::SearchBridge::new(cfg);
+            bridge.search(q, &state);
+        }
+        None => demo_state(&state),
+    }
 
+    let size = size_override.unwrap_or_else(|| theme.window.effective_size((cfg.window_width.max(1) as u32, cfg.window_height.max(1) as u32)));
+    let mut runtime = UiRuntime::new(theme, state.clone());
+
+    // Warm resolve, let entrance animations settle, then capture.
+    let _ = runtime.resolve(size);
+    std::thread::sleep(std::time::Duration::from_millis(settle_ms));
+    let nodes = runtime.resolve(size);
+    for w in runtime.take_warnings() {
+        eprintln!("[hiren-client] theme warning: {w}");
+    }
+    let count = nodes.nodes.len();
+    if std::env::var_os("HIREN_DEBUG_NODES").is_some() {
+        for n in &nodes.nodes {
+            eprintln!("{:>3} {:<28} x={:>7.1} y={:>7.1} w={:>7.1} h={:>7.1} o={:.2} z={} rot={:.1} scale={:.2}",
+                "", n.id, n.x, n.y, n.width, n.height, n.opacity, n.z, n.rotation, n.scale);
+        }
+    }
+    let pixmap = runtime.render_nodes(&nodes.nodes, size, 1.0);
+    let data = pixmap.encode_png().map_err(|e| anyhow::anyhow!("PNG encode: {e}"))?;
+    std::fs::write(&out, data).map_err(|e| anyhow::anyhow!("write {out}: {e}"))?;
+    println!("✓ {theme_name}: {count} nodes, {}x{} -> {out}", size.0, size.1);
     Ok(())
 }
 
-/// Настроить окно как Wayland-оверлей через gtk4-layer-shell.
-fn setup_layer_shell(window: &gtk::ApplicationWindow, mode: config::KeyboardModeConfig) {
-    window.init_layer_shell();
-
-    // Поверх всего
-    window.set_layer(Layer::Overlay);
-
-    // Режим клавиатуры из конфига (по умолчанию Exclusive).
-    let kb_mode = match mode {
-        config::KeyboardModeConfig::Exclusive => KeyboardMode::Exclusive,
-        config::KeyboardModeConfig::OnDemand => KeyboardMode::OnDemand,
-    };
-    window.set_keyboard_mode(kb_mode);
-}
-
 // ---------------------------------------------------------------------------
-// CSS
+// Theme validation — load + resolve + render every built-in theme offscreen
 // ---------------------------------------------------------------------------
 
-/// Загрузить CSS: всегда fallback как база, пользовательский — поверх.
-///
-/// Fallback гарантирует что все базовые классы имеют стили
-/// даже при наличии пользовательского CSS.
-fn load_css() {
-    let Some(display) = gdk::Display::default() else {
-        return;
-    };
+fn validate_themes() -> Result<()> {
+    let builtin_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("themes");
+    let mut ok = true;
+    let entries = std::fs::read_dir(&builtin_dir).map_err(|e| anyhow::anyhow!("read themes dir: {e}"))?;
+    let mut names: Vec<_> = entries
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    names.sort();
 
-    // 1. База: встроенный fallback (ПРИОРИТЕТ_FALLBACK)
-    let fallback_provider = gtk::CssProvider::new();
-    fallback_provider.load_from_data(&default_css());
-    gtk::style_context_add_provider_for_display(
-        &display,
-        &fallback_provider,
-        gtk::STYLE_PROVIDER_PRIORITY_FALLBACK,
-    );
-
-    // 2. Оверлей: пользовательский CSS (ПРИОРИТЕТ_USER) — переопределяет fallback
-    if let Some(user_css) = load_user_css() {
-        eprintln!("[hiren-client] Loaded user CSS (overriding fallback)");
-        let user_provider = gtk::CssProvider::new();
-        user_provider.load_from_data(&user_css);
-        gtk::style_context_add_provider_for_display(
-            &display,
-            &user_provider,
-            gtk::STYLE_PROVIDER_PRIORITY_USER,
-        );
+    for name in names {
+        let path = builtin_dir.join(&name);
+        match render_theme_check(&path) {
+            Ok((desc, nodes, warnings)) => {
+                println!("✓ {name}: {desc} — {nodes} draw nodes");
+                for w in warnings {
+                    println!("    ⚠ {w}");
+                }
+            }
+            Err(e) => {
+                eprintln!("✗ {name}: {e:#}");
+                ok = false;
+            }
+        }
+    }
+    if ok {
+        println!("All themes validated.");
+        Ok(())
     } else {
-        eprintln!("[hiren-client] Using built-in fallback CSS only");
+        anyhow::bail!("Some themes failed validation")
     }
 }
 
-/// Попытаться прочитать `~/.config/hiren/style.css`.
-fn load_user_css() -> Option<String> {
-    let path = css_path()?;
-    std::fs::read_to_string(&path).ok()
-}
+fn render_theme_check(path: &std::path::Path) -> Result<(String, usize, Vec<String>)> {
+    let theme = Theme::load_from_dir(path)?;
+    let desc = if theme.meta.description.is_empty() { theme.meta.name.clone() } else { theme.meta.description.clone() };
 
-fn css_path() -> Option<PathBuf> {
-    Some(dirs::config_dir()?.join("hiren").join("style.css"))
-}
+    let mut state = LauncherState::new();
+    state.query = "test".into();
+    state.set_results(vec![
+        hiren_shared::AppEntry::drun("firefox".into(), "Firefox".into(), "firefox".into(), Some("Browse the Web".into()), "web".into()),
+        hiren_shared::AppEntry::run("code".into(), "Code".into(), "code".into()),
+        hiren_shared::AppEntry::run("alacritty".into(), "Alacritty".into(), "alacritty".into()),
+        hiren_shared::AppEntry::run("calc".into(), "Calculator".into(), "calc".into()),
+    ]);
+    state.selected_index = 1;
 
-/// Минимальный fallback-стиль, гарантирующий корректную геометрию
-/// и прозрачность даже без пользовательского CSS.
-///
-/// CSS-классы (v2 — модульная архитектура):
-/// - `.launcher-window` — окно лаунчера
-/// - `.outer-box`     — видимая «карточка»
-/// - `.search-entry`  — поле ввода
-/// - `.results-list`  — список результатов (GtkListView)
-/// - `.app-icon`      — иконка приложения в строке
-/// - `.app-name`      — название приложения в строке
-fn default_css() -> String {
-    r#"
-/* === hiren fallback styles v2 === */
-
-/* Окно: прозрачный фон */
-.launcher-window {
-    background: transparent;
-}
-
-/* Внешний контейнер */
-.outer-box {
-    background: rgba(30, 30, 46, 0.92);
-    border-radius: 16px;
-    padding: 16px;
-}
-
-/* Поле ввода */
-.search-entry {
-    font-size: 16px;
-    padding: 10px 16px;
-    border-radius: 12px;
-    background: rgba(255, 255, 255, 0.08);
-    color: #cdd6f4;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    margin-bottom: 8px;
-    caret-color: #89b4fa;
-}
-
-.search-entry:focus {
-    border-color: #89b4fa;
-    background: rgba(255, 255, 255, 0.10);
-    box-shadow: 0 0 0 3px rgba(137, 180, 250, 0.15);
-}
-
-/* Индикатор режима */
-.mode-indicator {
-    font-size: 11px;
-    color: rgba(205, 214, 244, 0.5);
-    text-transform: uppercase;
-    letter-spacing: 1px;
-}
-
-/* Список результатов */
-.results-list {
-    background: transparent;
-}
-
-/* Строки результатов (CSS-ноды row внутри GtkListView) */
-.results-list row {
-    padding: 8px 12px;
-    border-radius: 8px;
-    color: #cdd6f4;
-    font-size: 15px;
-    background: transparent;
-}
-
-.results-list row:selected {
-    background: rgba(137, 180, 250, 0.25);
-    color: #ffffff;
-}
-
-/* Иконки приложений */
-.app-icon {
-    margin-right: 8px;
-    min-width: 24px;
-    min-height: 24px;
-}
-
-.app-name {
-    font-weight: 500;
-}
-"#
-    .to_string()
+    let size = theme.window.effective_size((640, 480));
+    let mut runtime = UiRuntime::new(theme, ObservableState::new(state));
+    let out = runtime.resolve(size);
+    let nodes = out.nodes.clone();
+    let warnings = runtime.take_warnings();
+    let pixmap = runtime.render_nodes(&nodes, size, 1.0);
+    let _ = pixmap; // exercising the full render path is the point
+    Ok((desc, nodes.len(), warnings))
 }

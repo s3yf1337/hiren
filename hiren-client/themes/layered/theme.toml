@@ -1,0 +1,300 @@
+# Layered — modern AI/product, depth, orbs
+# Two floating panels, depth via shadows, orbs that follow selection, chip, preview.
+
+[meta]
+name = "layered"
+description = "Layered — floating panels, orbs reacting to selection, preview, chip"
+author = "hiren"
+
+[window]
+width = 860
+height = 560
+transparent = true
+
+# Backdrop — deep neutral
+[[nodes]]
+id = "bg"
+type = "Rectangle"
+x = "0"
+y = "0"
+width = "window.width"
+height = "window.height"
+props = { background = "linear-gradient(180deg, #0f0f12 0%, #0b0c0f 100%)", radius = "20", shadow = "0 24 64 rgba(0,0,0,0.5)" }
+
+# Decorative orbs — react to selection AND drift slowly with time
+# (independent objects; z = -1 keeps them behind the panels)
+[[nodes]]
+id = "orb1"
+type = "Rectangle"
+x = "launcher.selected_index * 5 + 72 + sin(time * 0.35) * 14"
+y = "launcher.selected_index * 3 + 36 + cos(time * 0.27) * 10"
+width = "220"
+height = "220"
+props = { background = "rgba(99,102,241,0.10)", radius = "110" }
+z = -1
+visible = "launcher.results_count > 0"
+animate = [{ property = "x", duration_ms = 600, easing = "ease_out_cubic" }, { property = "y", duration_ms = 600, easing = "ease_out_cubic" }]
+
+[[nodes]]
+id = "orb2"
+type = "Rectangle"
+x = "window.width - 240 - launcher.selected_index * 4 + sin(time * 0.22 + 2) * 18"
+y = "360 - launcher.selected_index * 2"
+width = "180"
+height = "180"
+props = { background = "rgba(168,85,247,0.09)", radius = "90" }
+z = -1
+visible = "launcher.results_count > 0"
+animate = [{ property = "x", duration_ms = 700, easing = "ease_out_cubic" }]
+
+[[nodes]]
+id = "orb3"
+type = "Rectangle"
+x = "420 - launcher.selected_index * 2 + cos(time * 0.3 + 1) * 12"
+y = "500"
+width = "130"
+height = "130"
+props = { background = "rgba(56,189,248,0.08)", radius = "65" }
+z = -1
+visible = "launcher.results_count > 0"
+animate = [{ property = "x", duration_ms = 800, easing = "ease_out_cubic" }]
+
+# Left panel — main
+[[nodes]]
+id = "left_panel"
+type = "Rectangle"
+x = "24"
+y = "24"
+width = "420"
+height = "window.height - 48"
+props = { background = "rgba(255,255,255,0.06)", radius = "16", border = "1px rgba(255,255,255,0.07)", shadow = "0 8 32 rgba(0,0,0,0.35)" }
+animate = [{ property = "x", from = -60, duration_ms = 420, easing = "ease_out_expo" }, { property = "opacity", from = 0, duration_ms = 280, easing = "ease_out_quad" }]
+
+# Search
+[[nodes]]
+id = "search_box"
+type = "Rectangle"
+x = "40"
+y = "40"
+width = "388"
+height = "48"
+props = { background = "rgba(0,0,0,0.38)", radius = "12", border = "1px rgba(255,255,255,0.06)" }
+
+[[nodes]]
+id = "search_dot"
+type = "Rectangle"
+x = "52"
+y = "58"
+width = "8"
+height = "12"
+props = { background = "#6366f1", radius = "2" }
+
+[[nodes]]
+id = "search_text"
+type = "Text"
+x = "68"
+y = "40"
+width = "340"
+height = "48"
+text = "launcher.query"
+props = { color = "white", font_size = "15", font_weight = "500", align = "left" }
+
+[[nodes]]
+id = "search_ph"
+type = "Text"
+x = "68"
+y = "40"
+width = "340"
+height = "48"
+text = "Ask, search, launch…"
+visible = "launcher.query == ''"
+props = { color = "rgba(255,255,255,0.38)", font_size = "15", align = "left" }
+
+# Selector — left panel, spring not needed, ease_out
+[[nodes]]
+id = "selector"
+type = "Rectangle"
+x = "40"
+y = "launcher.selected_index * 52 + 104"
+width = "388"
+height = "44"
+props = { background = "rgba(99,102,241,0.18)", radius = "10", border = "1px rgba(99,102,241,0.30)", shadow = "0 4 16 rgba(99,102,241,0.22)" }
+visible = "launcher.results_count > 0"
+animate = [{ property = "y", duration_ms = 440, easing = "spring", spring = { stiffness = 240, damping = 24, mass = 1 } }]
+
+[[nodes]]
+id = "results"
+type = "Repeater"
+x = "40"
+y = "104 - clamp(launcher.selected_index - 6, 0, launcher.results_count) * 52"
+width = "388"
+height = "floor((window.height - 104 - 88) / 52) * 52"
+model = "launcher.results"
+delegate = "layered_row"
+props = { gap = "8", item_height = "44", layout = "vertical", clip_y = "104" }
+
+# Right panel — preview
+[[nodes]]
+id = "right_panel"
+type = "Rectangle"
+x = "468"
+y = "24"
+width = "368"
+height = "window.height - 48"
+props = { background = "rgba(255,255,255,0.055)", radius = "16", border = "1px rgba(255,255,255,0.07)", shadow = "0 8 32 rgba(0,0,0,0.35)" }
+visible = "launcher.results_count > 0"
+animate = [{ property = "x", from = "window.width + 60", duration_ms = 460, delay = 90, easing = "ease_out_expo" }, { property = "opacity", from = 0, duration_ms = 300, delay = 90, easing = "ease_out_quad" }]
+
+[[nodes]]
+id = "right_top"
+type = "Rectangle"
+x = "468"
+y = "24"
+width = "368"
+height = "1"
+props = { background = "rgba(255,255,255,0.08)", radius = "16" }
+visible = "launcher.results_count > 0"
+
+[[nodes]]
+id = "preview_kicker"
+type = "Text"
+x = "488"
+y = "44"
+width = "328"
+height = "14"
+text = "PREVIEW"
+props = { color = "rgba(99,102,241,0.9)", font_size = "10", font_weight = "700", align = "left" }
+
+[[nodes]]
+id = "preview_name"
+type = "Text"
+x = "488"
+y = "62"
+width = "328"
+height = "36"
+text = "launcher.selected_result.name"
+props = { color = "white", font_size = "17", font_weight = "650", align = "left" }
+
+[[nodes]]
+id = "preview_id"
+type = "Text"
+x = "488"
+y = "100"
+width = "328"
+height = "14"
+text = "launcher.selected_result.id"
+props = { color = "rgba(255,255,255,0.45)", font_size = "11", align = "left" }
+
+[[nodes]]
+id = "preview_exec"
+type = "Text"
+x = "488"
+y = "120"
+width = "328"
+height = "40"
+text = "launcher.selected_result.exec"
+props = { color = "rgba(255,255,255,0.32)", font_size = "10", align = "left" }
+
+[[nodes]]
+id = "preview_desc"
+type = "Text"
+x = "488"
+y = "164"
+width = "328"
+height = "48"
+text = "launcher.selected_result.description"
+visible = "launcher.selected_result.description != ''"
+props = { color = "rgba(255,255,255,0.45)", font_size = "12", align = "left" }
+
+# Chip — shows count, reacts to query
+[[nodes]]
+id = "chip"
+type = "Rectangle"
+x = "488"
+y = "228"
+width = "140"
+height = "28"
+props = { background = "rgba(99,102,241,0.22)", radius = "14", border = "1px rgba(99,102,241,0.35)" }
+visible = "launcher.query != ''"
+
+[[nodes]]
+id = "chip_text"
+type = "Text"
+x = "488"
+y = "228"
+width = "140"
+height = "28"
+text = "launcher.results_count"
+props = { color = "white", font_size = "12", font_weight = "600", align = "center" }
+visible = "launcher.query != ''"
+
+# Footer inside left
+[[nodes]]
+id = "left_footer"
+type = "Text"
+x = "40"
+y = "window.height - 36"
+width = "388"
+height = "12"
+text = "↑↓  move  •  ⏎  open  •  esc  close"
+props = { color = "rgba(255,255,255,0.28)", font_size = "10", align = "center" }
+
+[components.layered_row]
+  # staggered entrance
+  [[components.layered_row.animate]]
+  property = "opacity"
+  from = 0
+  duration_ms = 260
+  delay = "index * 40"
+  easing = "ease_out_quad"
+
+  [[components.layered_row.nodes]]
+  id = "row_bg"
+  type = "Rectangle"
+  x = "0"
+  y = "0"
+  width = "388"
+  height = "44"
+  props = { background = "transparent", radius = "10" }
+  on_click = "activate(index)"
+
+  [[components.layered_row.nodes]]
+  id = "row_dot"
+  type = "Rectangle"
+  x = "12"
+  y = "19"
+  width = "6"
+  height = "6"
+  props = { background = "rgba(99,102,241,0.9)", radius = "3" }
+
+  [[components.layered_row.nodes]]
+  id = "row_name"
+  type = "Text"
+  x = "24"
+  y = "4"
+  width = "352"
+  height = "22"
+  text = "item_name"
+  props = { color = "white", font_size = "13", font_weight = "500", align = "left" }
+
+  [[components.layered_row.nodes]]
+  id = "row_sub"
+  type = "Text"
+  x = "24"
+  y = "26"
+  width = "352"
+  height = "13"
+  text = "item_id"
+  visible = "item_description == ''"
+  props = { color = "rgba(255,255,255,0.32)", font_size = "10", align = "left" }
+
+  [[components.layered_row.nodes]]
+  id = "row_desc"
+  type = "Text"
+  x = "24"
+  y = "26"
+  width = "352"
+  height = "13"
+  text = "item_description"
+  visible = "item_description != ''"
+  props = { color = "rgba(255,255,255,0.32)", font_size = "10", align = "left" }

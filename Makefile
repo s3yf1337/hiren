@@ -1,5 +1,6 @@
 PREFIX ?= /usr/local
 BINDIR = $(PREFIX)/bin
+SHAREDIR = $(PREFIX)/share/hiren/themes
 
 # Под sudo $(HOME) раскрывается в /root, поэтому для systemd --user берём
 # домашний каталог реального пользователя (SUDO_USER), иначе сервис-файл
@@ -26,6 +27,15 @@ install: build
 	install -Dm755 target/release/hiren-daemon $(DESTDIR)$(BINDIR)/hiren-daemon
 	install -Dm755 target/release/hiren-client $(DESTDIR)$(BINDIR)/hiren-client
 	install -Dm644 hiren-daemon.service $(DESTDIR)$(SYSDIR)/hiren-daemon.service
+	@mkdir -p $(DESTDIR)$(SHAREDIR)
+	@for t in hiren-client/themes/*; do \
+		if [ -d "$$t" ]; then \
+			name=$$(basename "$$t"); \
+			mkdir -p $(DESTDIR)$(SHAREDIR)/$$name; \
+			install -Dm644 $$t/theme.toml $(DESTDIR)$(SHAREDIR)/$$name/theme.toml; \
+			echo "Installed theme $$name"; \
+		fi; \
+	done
 	@if [ -n "$(INSTALL_USER)" ]; then \
 		chown -R $(INSTALL_USER): $(SYSDIR); \
 		echo "Fixed ownership of $(SYSDIR) to $(INSTALL_USER)"; \
@@ -38,6 +48,7 @@ uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/hiren-daemon
 	rm -f $(DESTDIR)$(BINDIR)/hiren-client
 	rm -f $(DESTDIR)$(SYSDIR)/hiren-daemon.service
+	rm -rf $(DESTDIR)$(SHAREDIR)
 	@echo "Uninstall complete."
 
 clean:

@@ -6,9 +6,11 @@ license.workspace = true
 
 [dependencies]
 hiren-shared = { path = "../hiren-shared" }
-gtk4 = { version = "0.9", features = ["v4_10"] }
-glib = "0.20"
-gtk4-layer-shell = "0.4"
+winit = { version = "0.30", features = ["wayland", "x11"] }
+softbuffer = "0.4"
+tiny-skia = "0.11"
+cosmic-text = { version = "0.14", features = [] }
+fontdb = "0.21"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
@@ -16,3 +18,19 @@ dirs = "5"
 toml = "0.8"
 fuzzy-matcher = "0.3"
 meval = "0.2"
+log = "0.4"
+env_logger = "0.11"
+raw-window-handle = "0.6"
+
+# Wayland layer-shell (optional, graceful fallback to normal window)
+wayland-client = { version = "0.31", optional = true }
+wayland-protocols-wlr = { version = "0.3", optional = true }
+xkbcommon-dl = { version = "0.4", optional = true }
+libc = { version = "0.2", optional = true }
+
+[features]
+default = []
+layer-shell = ["wayland-client", "wayland-protocols-wlr", "xkbcommon-dl", "libc"]
+
+[dev-dependencies]
+tempfile = "3"

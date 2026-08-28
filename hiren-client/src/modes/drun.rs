@@ -1,7 +1,7 @@
 //! Режим drun — поиск и запуск .desktop-приложений через IPC-демон.
 
 use super::{exec_detached, SearchMode, SearchResult};
-use crate::config::Config;
+use crate::config::LauncherConfig as Config;
 use hiren_shared::AppEntry;
 
 pub struct DrunMode;

@@ -7,7 +7,7 @@
 //! - Кастомные команды из конфига
 
 use super::{detect_window_commands, exec_detached, SearchMode, SearchResult};
-use crate::config::Config;
+use crate::config::LauncherConfig as Config;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use hiren_shared::AppEntry;

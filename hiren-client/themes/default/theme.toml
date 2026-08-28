@@ -1,0 +1,249 @@
+# Default — polished everyday launcher
+# 8pt grid, layered shadows, subtle gradient, focus ring, independent selector.
+# This is the reference theme: it uses the same runtime as the experimental themes.
+
+[meta]
+name = "default"
+description = "Polished vertical launcher — gradient card, soft shadow, focus ring, spring selector, caret"
+author = "hiren"
+
+[window]
+width = 640
+height = 420
+transparent = true
+
+# Outer shadow (feeds renderer shadow)
+[[nodes]]
+id = "shadow"
+type = "Rectangle"
+x = "20"
+y = "20"
+width = "window.width - 40"
+height = "window.height - 40"
+props = { background = "transparent", radius = "16", shadow = "0 16 48 rgba(0,0,0,0.35)" }
+
+# Main card — gradient, subtle border
+[[nodes]]
+id = "card"
+type = "Rectangle"
+x = "20"
+y = "20"
+width = "window.width - 40"
+height = "window.height - 40"
+props = { background = "linear-gradient(180deg, #313244 0%, #1e1e2e 100%)", radius = "16", border = "1px rgba(255,255,255,0.06)", shadow = "0 8 32 rgba(0,0,0,0.25)" }
+
+# Search container — inner, focused when query present
+[[nodes]]
+id = "search_bg"
+type = "Rectangle"
+x = "32"
+y = "32"
+width = "window.width - 64"
+height = "48"
+props = { background = "rgba(255,255,255,0.06)", radius = "12", border = "1px rgba(255,255,255,0.10)" }
+
+[[nodes]]
+id = "search_focus"
+type = "Rectangle"
+x = "32"
+y = "32"
+width = "window.width - 64"
+height = "48"
+props = { background = "transparent", radius = "12", border = "1px #89b4fa" }
+visible = "launcher.query != ''"
+
+[[nodes]]
+id = "search_icon"
+type = "Text"
+x = "44"
+y = "32"
+width = "24"
+height = "48"
+text = "⌕"
+props = { color = "rgba(205,214,244,0.45)", font_size = "16", align = "center" }
+
+[[nodes]]
+id = "search_text"
+type = "Text"
+x = "68"
+y = "32"
+width = "window.width - 120"
+height = "48"
+text = "launcher.query"
+props = { color = "#cdd6f4", font_size = "16", font_weight = "500", align = "left" }
+
+# Caret — measured with text_width, blinking via the time binding
+[[nodes]]
+id = "caret"
+type = "Rectangle"
+x = "69 + text_width(launcher.query, 16)"
+y = "42"
+width = "2"
+height = "28"
+props = { background = "#89b4fa", radius = "1" }
+visible = "launcher.results_count >= 0"
+opacity = "sin(time * 5) > 0 ? 1 : 0.15"
+
+[[nodes]]
+id = "search_placeholder"
+type = "Text"
+x = "68"
+y = "32"
+width = "window.width - 120"
+height = "48"
+text = "Type to search…"
+visible = "launcher.query == ''"
+props = { color = "rgba(205,214,244,0.38)", font_size = "16", align = "left" }
+
+# Query count hint (right side)
+[[nodes]]
+id = "search_count"
+type = "Text"
+x = "window.width - 100"
+y = "32"
+width = "64"
+height = "48"
+text = "launcher.results_count"
+visible = "launcher.query != ''"
+props = { color = "rgba(205,214,244,0.35)", font_size = "12", align = "right" }
+
+# Divider
+[[nodes]]
+id = "divider"
+type = "Rectangle"
+x = "32"
+y = "88"
+width = "window.width - 64"
+height = "1"
+props = { background = "rgba(255,255,255,0.06)" }
+visible = "launcher.results_count > 0"
+
+# Independent selector — the proof that selection is not a row background.
+# Spring physics (real damped oscillator), slightly larger than the row.
+[[nodes]]
+id = "selector"
+type = "Rectangle"
+x = "30"
+y = "94 + (launcher.selected_index - clamp(launcher.selected_index - 4, 0, launcher.results_count)) * 52"
+width = "window.width - 60"
+height = "48"
+props = { background = "rgba(137,180,250,0.13)", radius = "10", border = "1px rgba(137,180,250,0.22)", shadow = "0 2 8 rgba(0,0,0,0.12)" }
+visible = "launcher.results_count > 0"
+animate = [{ property = "y", duration_ms = 420, easing = "spring" }]
+
+[[nodes]]
+id = "selector_accent"
+type = "Rectangle"
+x = "30"
+y = "94 + (launcher.selected_index - clamp(launcher.selected_index - 4, 0, launcher.results_count)) * 52"
+width = "3"
+height = "48"
+props = { background = "#89b4fa", radius = "2" }
+visible = "launcher.results_count > 0"
+animate = [{ property = "y", duration_ms = 420, easing = "spring" }]
+
+# Results — vertical list, virtualized to the card's inner height and
+# scrolling once the selection passes the 5th visible row.
+[[nodes]]
+id = "results"
+type = "Repeater"
+x = "32"
+y = "96 - clamp(launcher.selected_index - 4, 0, launcher.results_count) * 52"
+width = "window.width - 64"
+height = "floor((window.height - 32 - 96) / 52) * 52"
+model = "launcher.results"
+delegate = "result_row"
+props = { gap = "8", item_height = "44", layout = "vertical", clip_y = "96" }
+
+# Empty state
+[[nodes]]
+id = "empty"
+type = "Text"
+x = "32"
+y = "140"
+width = "window.width - 64"
+height = "32"
+text = "No results"
+visible = "launcher.results_count == 0 && launcher.query != ''"
+props = { color = "rgba(205,214,244,0.35)", font_size = "14", align = "center" }
+
+# Footer hint
+[[nodes]]
+id = "footer"
+type = "Text"
+x = "32"
+y = "window.height - 32"
+width = "window.width - 64"
+height = "16"
+text = "↕ navigate  •  ↵ launch  •  esc close"
+props = { color = "rgba(205,214,244,0.28)", font_size = "10", align = "center" }
+
+[components.result_row]
+  [[components.result_row.nodes]]
+  id = "row_bg"
+  type = "Rectangle"
+  x = "0"
+  y = "0"
+  width = "576"
+  height = "44"
+  props = { background = "is_selected ? rgba(137,180,250,0.10) : transparent", radius = "10" }
+  on_click = "activate(index)"
+
+  [[components.result_row.nodes]]
+  id = "row_icon_bg"
+  type = "Rectangle"
+  x = "8"
+  y = "10"
+  width = "24"
+  height = "24"
+  props = { background = "rgba(137,180,250,0.12)", radius = "6" }
+
+  [[components.result_row.nodes]]
+  id = "row_icon_letter"
+  type = "Text"
+  x = "8"
+  y = "10"
+  width = "24"
+  height = "24"
+  text = "initial(item_name)"
+  props = { color = "#89b4fa", font_size = "12", font_weight = "700", align = "center" }
+
+  [[components.result_row.nodes]]
+  id = "row_text"
+  type = "Text"
+  x = "40"
+  y = "0"
+  width = "480"
+  height = "26"
+  text = "item_name"
+  props = { color = "#cdd6f4", font_size = "14", font_weight = "500", align = "left" }
+
+  [[components.result_row.nodes]]
+  id = "row_desc"
+  type = "Text"
+  x = "40"
+  y = "20"
+  width = "480"
+  height = "16"
+  text = "item_id"
+  visible = "item_description == ''"
+  props = { color = "rgba(205,214,244,0.38)", font_size = "11", align = "left" }
+
+  [[components.result_row.nodes]]
+  id = "row_exec"
+  type = "Text"
+  x = "40"
+  y = "20"
+  width = "480"
+  height = "16"
+  text = "item_description"
+  visible = "item_description != ''"
+  props = { color = "rgba(205,214,244,0.42)", font_size = "11", align = "left" }
+
+  # per-row entrance: fade + slight rise, staggered by index
+  [[components.result_row.animate]]
+  property = "opacity"
+  from = 0
+  duration_ms = 240
+  delay = "index * 30"
+  easing = "ease_out_quad"

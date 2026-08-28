@@ -4,7 +4,7 @@
 //! кэширует список исполняемых файлов, выполняет fuzzy-поиск.
 
 use super::{exec_detached, SearchMode, SearchResult};
-use crate::config::Config;
+use crate::config::LauncherConfig as Config;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use hiren_shared::AppEntry;

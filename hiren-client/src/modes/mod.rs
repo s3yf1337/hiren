@@ -11,7 +11,7 @@ pub mod drun;
 pub mod run;
 pub mod window;
 
-use crate::config::{self, Config, WindowConfig};
+use crate::config::{self, LauncherConfig as Config, WindowConfig};
 use hiren_shared::AppEntry;
 
 /// Результат поиска в режиме.
