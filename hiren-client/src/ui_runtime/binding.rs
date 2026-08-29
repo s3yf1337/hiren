@@ -454,6 +454,8 @@ fn eval_numeric(expr: &str, ctx: &mut EvalContext) -> Option<f64> {
     mctx.var("pi", std::f64::consts::PI)
         .var("tau", std::f64::consts::TAU)
         .var("time", ctx.time as f64)
+        .func2("min", f64::min)
+        .func2("max", f64::max)
         .func3("clamp", |v: f64, lo: f64, hi: f64| v.max(lo).min(hi));
     // expose remaining numeric locals (index, count, selected_index, ...)
     for (k, v) in &ctx.locals {

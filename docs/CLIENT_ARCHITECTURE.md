@@ -191,7 +191,8 @@ A property value is either a **literal** (`x = 32`, `text = "Firefox"`) or an
 **expression string** (`x = "window.width - 64"`). Expressions support:
 
 - arithmetic `+ - * /`, parentheses, `min/max/abs/floor/ceil/round/sqrt/sin/cos/clamp`
-- comparisons `== != < <= > >=`, boolean `&& || !`, ternary `cond ? a : b` (lazy)
+- comparisons `== != < <= > >=`, boolean `&& || !`, ternary `cond ? a : b` (lazy —
+  a ternary must be the whole expression; inside larger arithmetic, use `min`/`max`)
 - state paths (`launcher.*`, `window.*`, `time`), repeater locals
 - `text_width(text, size)` — measured width, inlines into arithmetic
 - `initial(text)` — first grapheme (icon chips)

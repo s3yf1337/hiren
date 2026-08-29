@@ -127,12 +127,13 @@ height = "1"
 props = { background = "rgba(0,0,0,0.06)" }
 visible = "launcher.results_count > 0"
 
-# Selector — spring, white, soft shadow, 1px border, behind text
+# Selector — spring, white, soft shadow, 1px border, behind text.
+# Same scroll term as the list below, or it would slide off-screen.
 [[nodes]]
 id = "selector"
 type = "Rectangle"
 x = "36"
-y = "launcher.selected_index * 52 + 108"
+y = "108 + (launcher.selected_index - clamp(launcher.selected_index - 5, 0, launcher.results_count)) * 52"
 width = "window.width - 72"
 height = "44"
 props = { background = "white", radius = "10", border = "1px rgba(0,0,0,0.05)", shadow = "0 2 12 rgba(0,0,0,0.08)" }

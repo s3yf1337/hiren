@@ -22,12 +22,14 @@ height = "window.height"
 props = { background = "linear-gradient(180deg, #0f0f12 0%, #0b0c0f 100%)", radius = "20", shadow = "0 24 64 rgba(0,0,0,0.5)" }
 
 # Decorative orbs — react to selection AND drift slowly with time
-# (independent objects; z = -1 keeps them behind the panels)
+# (independent objects; z = -1 keeps them behind the panels).
+# The parallax term is capped by min(..., 24): an unbounded
+# `selected_index * k` drifts the orbs out of the window on long lists.
 [[nodes]]
 id = "orb1"
 type = "Rectangle"
-x = "launcher.selected_index * 5 + 72 + sin(time * 0.35) * 14"
-y = "launcher.selected_index * 3 + 36 + cos(time * 0.27) * 10"
+x = "min(launcher.selected_index, 24) * 5 + 72 + sin(time * 0.35) * 14"
+y = "min(launcher.selected_index, 24) * 3 + 36 + cos(time * 0.27) * 10"
 width = "220"
 height = "220"
 props = { background = "rgba(99,102,241,0.10)", radius = "110" }
@@ -38,8 +40,8 @@ animate = [{ property = "x", duration_ms = 600, easing = "ease_out_cubic" }, { p
 [[nodes]]
 id = "orb2"
 type = "Rectangle"
-x = "window.width - 240 - launcher.selected_index * 4 + sin(time * 0.22 + 2) * 18"
-y = "360 - launcher.selected_index * 2"
+x = "window.width - 240 - min(launcher.selected_index, 24) * 4 + sin(time * 0.22 + 2) * 18"
+y = "360 - min(launcher.selected_index, 24) * 2"
 width = "180"
 height = "180"
 props = { background = "rgba(168,85,247,0.09)", radius = "90" }
@@ -50,7 +52,7 @@ animate = [{ property = "x", duration_ms = 700, easing = "ease_out_cubic" }]
 [[nodes]]
 id = "orb3"
 type = "Rectangle"
-x = "420 - launcher.selected_index * 2 + cos(time * 0.3 + 1) * 12"
+x = "420 - min(launcher.selected_index, 24) * 2 + cos(time * 0.3 + 1) * 12"
 y = "500"
 width = "130"
 height = "130"
@@ -110,12 +112,13 @@ text = "Ask, search, launch…"
 visible = "launcher.query == ''"
 props = { color = "rgba(255,255,255,0.38)", font_size = "15", align = "left" }
 
-# Selector — left panel, spring not needed, ease_out
+# Selector — left panel, spring not needed, ease_out.
+# Same scroll term as the results list below, or it would slide off-screen.
 [[nodes]]
 id = "selector"
 type = "Rectangle"
 x = "40"
-y = "launcher.selected_index * 52 + 104"
+y = "104 + (launcher.selected_index - clamp(launcher.selected_index - 6, 0, launcher.results_count)) * 52"
 width = "388"
 height = "44"
 props = { background = "rgba(99,102,241,0.18)", radius = "10", border = "1px rgba(99,102,241,0.30)", shadow = "0 4 16 rgba(99,102,241,0.22)" }
