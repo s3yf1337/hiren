@@ -45,6 +45,20 @@ impl Renderer {
                 continue;
             }
             if let Some((cx, cy, cw, ch)) = node.clip {
+                // Fast path: the transformed node lies fully inside the clip
+                // rect, so the scissor is a no-op — draw directly instead of
+                // paying a full-window scratch clear + composite per node.
+                // (Shadows spill past the bounds and need the scratch.)
+                let (nx0, ny0, nx1, ny1) = Self::transformed_bounds(node);
+                if !node.props.contains_key("shadow")
+                    && nx0 >= cx
+                    && ny0 >= cy
+                    && nx1 <= cx + cw
+                    && ny1 <= cy + ch
+                {
+                    self.draw_node(node, &mut pixmap, scale);
+                    continue;
+                }
                 // Scissor: draw into a scratch surface, then composite only
                 // the part of the node that falls inside the clip rect.
                 let pad = 80.0 * scale; // rotation/scale/shadow spill
@@ -91,6 +105,19 @@ impl Renderer {
             }
         }
         pixmap
+    }
+
+    /// Axis-aligned bounds of a node after its rotation/scale transform
+    /// (rotation and uniform scale act about the node center).
+    fn transformed_bounds(node: &ResolvedNode) -> (f32, f32, f32, f32) {
+        let (w, h) = (node.width * node.scale, node.height * node.scale);
+        let rad = node.rotation.to_radians();
+        let (c, s) = (rad.cos().abs(), rad.sin().abs());
+        let hx = (w * c + h * s) * 0.5;
+        let hy = (w * s + h * c) * 0.5;
+        let cx = node.x + node.width * 0.5;
+        let cy = node.y + node.height * 0.5;
+        (cx - hx, cy - hy, cx + hx, cy + hy)
     }
 
     fn node_transform_with_scale(node: &ResolvedNode, scale: f32) -> Transform {
