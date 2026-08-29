@@ -144,7 +144,7 @@ animate = [{ property = "y", duration_ms = 220, easing = "ease_out_cubic" }]
 ```
 
 - `hiren-client/themes/default/theme.toml` — clean vertical launcher (uses runtime like all others)
-- `hiren-client/themes/atlus/theme.toml` — Persona 5 Pop Punk: flat red fields on black, diagonal system, cyan selection slash, hero numerals
+- `hiren-client/themes/atlus/theme.toml` — Persona 5 Save/Load geometry: skewed parallelogram rows with No-tags, plate-stack selection (cyan/violet + red slab), film perforation, ransom-note Antonio type with black outlines, torn red header mass
 - `hiren-client/themes/macos/theme.toml` — calm floating card, spring motion
 - `hiren-client/themes/layered/theme.toml` — layered panels, decorative orbs reacting to selection
 - `hiren-client/themes/circular/theme.toml` — radial, search centered, results in circle

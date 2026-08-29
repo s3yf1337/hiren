@@ -1,34 +1,36 @@
-# ATLAS — Persona 5 / Atlus "Pop Punk" design language
-# -----------------------------------------------------
-# Grounded in Atlus's own CEDEC 2017 UI talk and pixel measurements of
-# official P5 screens (see docs/CLIENT_ARCHITECTURE.md):
-#   - ~60% true-black ground, red as LARGE FLAT FIELDS (~20%), white only
-#     for type and lines (~4%). No gradients, no glows, no drop shadows.
-#   - One diagonal system (-12°) for every decorative shape; content
-#     itself stays straight (loud display, quiet body).
-#   - Cyan (#40E0E8) is reserved for the selection marker, yellow
-#     (#FFD800) for numbers — never used anywhere else.
-#   - Jagged stepped edges, cut corners, sticker tabs — no plain
-#     rectangles anywhere; hero-scale numerals (2-4x the label size).
-#   - CONSTANT ambient motion like the game: the diagonal masses breathe,
-#     the gaze line drifts, halftone dots shimmer, sparks float along the
-#     base, the selection shivers. `time`-driven — the runtime paces this
-#     at ~22 fps so an idle launcher still costs almost nothing.
-#   - Fast input feedback (<=0.15s springs) on top of the ambient drift.
-# Scroll geometry: rows are 56px + 10 gap (stride 66), viewport clips at
-# y=128; the selector/deco divide the same scroll offset as the list.
+# ATLAS — Persona 5 / Atlus "Pop Punk" design language, take two
+# ---------------------------------------------------------------
+# Modeled directly on P5R's Save/Load screens (GameUIDatabase #618):
+#   * EVERYTHING sits on one diagonal family (-7..-12 deg). List rows are
+#     SKEWED PARALLELOGRAMS (not rotated rects): `skew` leans their vertical
+#     edges while `rotation` lays the band on the diagonal.
+#   * Selected row = the game's selection explosion: a red slab on a stack of
+#     cyan + violet offset plates (the "LoaD GAmE" title stack), film-strip
+#     perforation down its left edge, a spinning star sparkle at its end.
+#   * Unselected rows are white bars with black borders and black "No.N"
+#     tag chips hanging off the left edge, red hero numerals, black type.
+#   * Type is ransom-note: Antonio (condensed display) with thick black
+#     outline + hard offset shadow on headers; DejaVu Serif for the quiet
+#     serif body lines (P5 uses a serif for location/label text).
+#   * Palette discipline: true black ground, ONE red (#E60012) as large flat
+#     fields, white for type/bars, cyan #29ABE2 + violet #7B4CE0 ONLY in the
+#     selection plate stack, yellow #FFD800 ONLY for numerals.
+#   * Constant ambient motion (time bindings on NON-animated props only —
+#     springs own scale/y; drift owns x/y/rotation/opacity elsewhere).
+# Scroll geometry: rows 46px + 14 gap (stride 60), viewport clips at y=168,
+# the No-chips and plates divide the same scroll offset as the list.
 
 [meta]
 name = "atlus"
-description = "Persona 5 Pop Punk — flat red fields on true black, breathing diagonals, constant ambient motion, cyan selection slash, hero numerals"
+description = "Persona 5 Save/Load geometry — skewed rows, No-tags, plate-stack selection, ransom-note Antonio type"
 author = "hiren"
 
 [window]
-width = 840
-height = 520
+width = 860
+height = 560
 transparent = true
 
-# Ground — true black, sharp corners
+# Ground — true black, like the game's negative space
 [[nodes]]
 id = "bg"
 type = "Rectangle"
@@ -36,467 +38,364 @@ x = "0"
 y = "0"
 width = "window.width"
 height = "window.height"
-props = { background = "#0C0C0D" }
+props = { background = "#000000" }
 
-# Deep parallax — a barely-there diagonal band drifting across the ground
+# Deep diagonal — barely-there white slash across the black zone
 [[nodes]]
 id = "bg_slash"
 type = "Rectangle"
-x = "-200 + sin(time * 0.16) * 80"
-y = "290"
-width = "1800"
-height = "130"
+x = "-260 + sin(time * 0.13) * 70"
+y = "330"
+width = "1700"
+height = "110"
 rotation = "-12"
-opacity = "0.035"
+skew = "-6"
+opacity = "0.03"
 props = { background = "#FFFFFF" }
 
-# Deep red underlayer — the parallax echo behind the main field
+# THE red mass — header field, skewed + laid on the diagonal
 [[nodes]]
-id = "red_band_deep"
+id = "red_mass"
 type = "Rectangle"
-x = "-160 + sin(time * 0.31 + 1.7) * 20"
-y = "-96 + cos(time * 0.36 + 0.9) * 10"
-width = "1240"
-height = "204"
-rotation = "-10.6 + sin(time * 0.42 + 2.1) * 1.1"
-props = { background = "#BA0000" }
+x = "-150"
+y = "-176 + cos(time * 0.43) * 7"
+width = "1230"
+height = "268"
+rotation = "-4 + sin(time * 0.5) * 1.1"
+skew = "-6"
+props = { background = "#E60012" }
+animate = [{ property = "opacity", from = 0, duration_ms = 200, easing = "ease_out_quad" }]
 
-# Red field — the signature diagonal mass across the top (breathing).
-# Drift lives on y/rotation (never animated) so springs can't chase it.
+# Deep red echo behind the mass
 [[nodes]]
-id = "red_band"
+id = "red_deep"
 type = "Rectangle"
-x = "-90"
-y = "-142 + cos(time * 0.47) * 8"
-width = "1120"
-height = "234"
-rotation = "-12 + sin(time * 0.55) * 1.4"
-props = { background = "#DE0000" }
-animate = [{ property = "opacity", from = 0, duration_ms = 220, easing = "ease_out_quad" }]
+x = "-190 + sin(time * 0.29 + 2.0) * 16"
+y = "-140 + cos(time * 0.33 + 0.8) * 9"
+width = "1180"
+height = "230"
+rotation = "-5.4 + sin(time * 0.39 + 1.9) * 1.0"
+skew = "-7"
+props = { background = "#A4000E" }
+animate = [{ property = "opacity", from = 0, duration_ms = 240, delay = 40, easing = "ease_out_quad" }]
 
-# Torn edge — black steps biting into the red field's lower edge.
-# Phase-locked to the band's breathing so the bite stays on the edge.
+# Torn bites — black jags eating into the red mass's lower edge
 [[nodes]]
 id = "tear_a"
-type = "Rectangle"
-x = "560 + sin(time * 0.4) * 14"
-y = "76 + cos(time * 0.47) * 8"
-width = "30"
-height = "30"
-rotation = "-12 + sin(time * 0.55) * 1.4"
-props = { background = "#0C0C0D" }
-animate = [{ property = "opacity", from = 0, duration_ms = 200, delay = 260, easing = "ease_out_quad" }]
+type = "Polygon"
+x = "470"
+y = "84 + cos(time * 0.43) * 7"
+width = "120"
+height = "60"
+rotation = "-4 + sin(time * 0.5) * 1.1"
+points = "0,0; 120,10; 74,22; 108,34; 38,42; 62,58; 0,40"
+props = { background = "#000000" }
+animate = [{ property = "opacity", from = 0, duration_ms = 180, delay = 240, easing = "ease_out_quad" }]
 
 [[nodes]]
 id = "tear_b"
-type = "Rectangle"
-x = "618 + sin(time * 0.4) * 14"
-y = "70 + cos(time * 0.47) * 8"
+type = "Polygon"
+x = "640"
+y = "66 + cos(time * 0.43) * 7"
+width = "90"
+height = "44"
+rotation = "-4 + sin(time * 0.5) * 1.1"
+points = "0,6; 90,0; 66,16; 84,26; 24,36; 44,44; 0,30"
+props = { background = "#000000" }
+animate = [{ property = "opacity", from = 0, duration_ms = 180, delay = 280, easing = "ease_out_quad" }]
+
+# Film perforation — white sprocket column on the left edge
+[[nodes]]
+id = "perf"
+type = "Repeater"
+x = "14"
+y = "8"
+width = "30"
+height = "160"
+props = { count = "6", gap = "0", item_height = "0", layout = "vertical", clip_y = "8" }
+delegate = "perf_hole"
+
+# Star sparkle on the red mass
+[[nodes]]
+id = "mass_star"
+type = "Polygon"
+x = "360 + sin(time * 0.7) * 24"
+y = "96 + cos(time * 0.55 + 1.2) * 8"
 width = "16"
 height = "16"
-rotation = "-12 + sin(time * 0.55) * 1.4"
-props = { background = "#0C0C0D" }
-animate = [{ property = "opacity", from = 0, duration_ms = 200, delay = 300, easing = "ease_out_quad" }]
-
-[[nodes]]
-id = "tear_c"
-type = "Rectangle"
-x = "662 + sin(time * 0.4) * 14"
-y = "56 + cos(time * 0.47) * 8"
-width = "22"
-height = "22"
-rotation = "-12 + sin(time * 0.55) * 1.4"
-props = { background = "#0C0C0D" }
-animate = [{ property = "opacity", from = 0, duration_ms = 200, delay = 340, easing = "ease_out_quad" }]
-
-# Bottom-left red corner — balances the diagonal mass (own phase).
-# Entrance via opacity: x/rotation drift must never sit on animated props.
-[[nodes]]
-id = "red_corner"
-type = "Rectangle"
-x = "-150 + sin(time * 0.36 + 2.4) * 12"
-y = "452"
-width = "320"
-height = "120"
-rotation = "-12 + sin(time * 0.5 + 2.2) * 1.3"
-props = { background = "#DE0000" }
-animate = [{ property = "opacity", from = 0, duration_ms = 220, delay = 60, easing = "ease_out_quad" }]
-
-# The gaze line — Atlus's central white guide, drifting across the black.
-# Entrance slides x (static binding); the drift lives on y.
-[[nodes]]
-id = "gaze_line"
-type = "Rectangle"
-x = "-380"
-y = "392 + sin(time * 0.22) * 22"
-width = "1600"
-height = "2"
-rotation = "-12"
-opacity = "0.12 + 0.06 * sin(time * 0.8)"
+rotation = "time * 50"
+opacity = "0.5 + 0.3 * sin(time * 2.2)"
+points = "8,0; 10,6; 16,8; 10,10; 8,16; 6,10; 0,8; 6,6"
 props = { background = "#FFFFFF" }
-animate = [{ property = "x", from = -900, duration_ms = 520, delay = 120, easing = "ease_out_expo" }]
 
-# Wordmark — ransom-note caps with the lowercase-i quirk; letters sway
+# ---------------------------------------------------------------------
+# Wordmark — ransom-note caps, white with black outline over the red
+# ---------------------------------------------------------------------
 [[nodes]]
 id = "wm_h"
 type = "Text"
-x = "30"
-y = "22"
-width = "24"
-height = "34"
+x = "34"
+y = "10"
+width = "30"
+height = "44"
 text = "H"
-rotation = "-5 + sin(time * 1.1) * 1.6"
-props = { color = "#FFFFFF", font_size = "24", font_weight = "900", align = "center" }
-animate = [{ property = "opacity", from = 0, duration_ms = 160, delay = 120, easing = "ease_out_quad" }]
+rotation = "-5 + sin(time * 1.1) * 1.8"
+props = { color = "#FFFFFF", font_size = "34", font_weight = "700", font_family = "Antonio", align = "center", outline = "3px #000000", text_shadow = "3px 3px #000000" }
+animate = [{ property = "opacity", from = 0, duration_ms = 150, delay = 100, easing = "ease_out_quad" }]
 
 [[nodes]]
 id = "wm_i"
 type = "Text"
-x = "56"
-y = "26"
-width = "14"
-height = "34"
-text = "i"
-rotation = "4 + sin(time * 1.3 + 0.8) * 1.8"
-props = { color = "#FFFFFF", font_size = "27", font_weight = "900", align = "center" }
-animate = [{ property = "opacity", from = 0, duration_ms = 160, delay = 160, easing = "ease_out_quad" }]
+x = "66"
+y = "14"
+width = "18"
+height = "44"
+text = "I"
+rotation = "4 + sin(time * 1.3 + 0.8) * 2.0"
+props = { color = "#000000", font_size = "36", font_weight = "700", font_family = "Antonio", align = "center", outline = "3px #FFFFFF" }
+animate = [{ property = "opacity", from = 0, duration_ms = 150, delay = 140, easing = "ease_out_quad" }]
 
 [[nodes]]
 id = "wm_r"
 type = "Text"
-x = "70"
-y = "20"
-width = "24"
-height = "34"
+x = "86"
+y = "8"
+width = "30"
+height = "44"
 text = "R"
-rotation = "-3 + sin(time * 0.9 + 1.6) * 1.5"
-props = { color = "#FFFFFF", font_size = "24", font_weight = "900", align = "center" }
-animate = [{ property = "opacity", from = 0, duration_ms = 160, delay = 200, easing = "ease_out_quad" }]
+rotation = "-3 + sin(time * 0.9 + 1.6) * 1.6"
+props = { color = "#FFFFFF", font_size = "34", font_weight = "700", font_family = "Antonio", align = "center", outline = "3px #000000", text_shadow = "3px 3px #000000" }
+animate = [{ property = "opacity", from = 0, duration_ms = 150, delay = 180, easing = "ease_out_quad" }]
 
 [[nodes]]
 id = "wm_e"
 type = "Text"
-x = "96"
-y = "24"
-width = "22"
-height = "34"
+x = "118"
+y = "12"
+width = "28"
+height = "44"
 text = "E"
-rotation = "3 + sin(time * 1.2 + 2.4) * 1.7"
-props = { color = "#FFFFFF", font_size = "23", font_weight = "900", align = "center" }
-animate = [{ property = "opacity", from = 0, duration_ms = 160, delay = 240, easing = "ease_out_quad" }]
+rotation = "3 + sin(time * 1.2 + 2.4) * 1.9"
+props = { color = "#FFFFFF", font_size = "33", font_weight = "700", font_family = "Antonio", align = "center", outline = "3px #000000", text_shadow = "3px 3px #000000" }
+animate = [{ property = "opacity", from = 0, duration_ms = 150, delay = 220, easing = "ease_out_quad" }]
 
 [[nodes]]
 id = "wm_n"
 type = "Text"
-x = "120"
-y = "21"
-width = "24"
-height = "34"
+x = "148"
+y = "9"
+width = "30"
+height = "44"
 text = "N"
-rotation = "-4 + sin(time * 1.0 + 3.1) * 1.6"
-props = { color = "#FFFFFF", font_size = "24", font_weight = "900", align = "center" }
-animate = [{ property = "opacity", from = 0, duration_ms = 160, delay = 280, easing = "ease_out_quad" }]
+rotation = "-4 + sin(time * 1.0 + 3.1) * 1.7"
+props = { color = "#FFFFFF", font_size = "34", font_weight = "700", font_family = "Antonio", align = "center", outline = "3px #000000", text_shadow = "3px 3px #000000" }
+animate = [{ property = "opacity", from = 0, duration_ms = 150, delay = 260, easing = "ease_out_quad" }]
 
 [[nodes]]
 id = "wm_sub"
 type = "Text"
-x = "152"
-y = "30"
-width = "220"
-height = "26"
+x = "186"
+y = "22"
+width = "200"
+height = "24"
 text = "// LAUNCHER"
-props = { color = "rgba(255,255,255,0.55)", font_size = "11", font_weight = "700", align = "left" }
-animate = [{ property = "opacity", from = 0, duration_ms = 200, delay = 320, easing = "ease_out_quad" }]
+rotation = "-2"
+props = { color = "rgba(255,255,255,0.85)", font_size = "11", font_weight = "700", font_family = "Antonio", align = "left" }
+animate = [{ property = "opacity", from = 0, duration_ms = 180, delay = 300, easing = "ease_out_quad" }]
 
 [[nodes]]
 id = "wm_ver"
 type = "Text"
 x = "660"
-y = "30"
-width = "152"
-height = "26"
-text = "ATLAS v0.1.0"
-props = { color = "#FFFFFF", font_size = "11", font_weight = "800", align = "right" }
-animate = [{ property = "opacity", from = 0, duration_ms = 200, delay = 320, easing = "ease_out_quad" }]
+y = "22"
+width = "170"
+height = "22"
+text = "TAKE YOUR HEART"
+props = { color = "rgba(255,255,255,0.8)", font_size = "11", font_weight = "700", font_family = "Antonio", align = "right" }
+animate = [{ property = "opacity", from = 0, duration_ms = 180, delay = 300, easing = "ease_out_quad" }]
 
-# Search — P5 dialog box: tilted off-axis, jagged white outline, bites
+# ---------------------------------------------------------------------
+# Search — white parallelogram bar on the red mass, black comic shadow
+# ---------------------------------------------------------------------
 [[nodes]]
-id = "search_field"
+id = "search_bar"
 type = "Rectangle"
-x = "28"
-y = "56"
-width = "520"
-height = "60"
-rotation = "-1.6"
-props = { background = "#0C0C0D", border = "2px #FFFFFF" }
-animate = [{ property = "x", from = -80, duration_ms = 300, delay = 60, easing = "ease_out_expo" }, { property = "opacity", from = 0, duration_ms = 220, delay = 60, easing = "ease_out_quad" }]
+x = "36"
+y = "96"
+width = "560"
+height = "56"
+skew = "-12"
+props = { background = "#FFFFFF", border = "3px #000000", shadow = "6px 7px 0 #000000" }
+animate = [{ property = "x", from = -90, duration_ms = 300, delay = 60, easing = "ease_out_expo" }, { property = "opacity", from = 0, duration_ms = 200, delay = 60, easing = "ease_out_quad" }]
 
-# Bite — a real notch eaten out of the field's corner
-[[nodes]]
-id = "search_cut"
-type = "Rectangle"
-x = "530"
-y = "38"
-width = "36"
-height = "36"
-rotation = "-12"
-props = { background = "#0C0C0D" }
-
-# Red tape — slashes the white outline, breaking its continuity
-[[nodes]]
-id = "search_tape_a"
-type = "Rectangle"
-x = "336"
-y = "49"
-width = "54"
-height = "6"
-rotation = "-12"
-props = { background = "#FF1800" }
-
-[[nodes]]
-id = "search_tape_b"
-type = "Rectangle"
-x = "120"
-y = "108"
-width = "44"
-height = "6"
-rotation = "-12"
-props = { background = "#FF1800" }
-
-# Sticker tab
+# Sticker tab biting the bar's left edge
 [[nodes]]
 id = "search_tab"
 type = "Rectangle"
-x = "20"
-y = "48"
-width = "16"
-height = "16"
+x = "24"
+y = "88"
+width = "18"
+height = "18"
 rotation = "-12"
-props = { background = "#DE0000" }
-
-[[nodes]]
-id = "search_slash"
-type = "Rectangle"
-x = "6"
-y = "108"
-width = "96"
-height = "7"
-rotation = "-12 + sin(time * 2.1) * 1.8"
-props = { background = "#FF1800" }
-animate = [{ property = "x", from = -140, duration_ms = 340, delay = 200, easing = "ease_out_expo" }]
+props = { background = "#000000" }
 
 [[nodes]]
 id = "query"
 type = "Text"
-x = "48"
-y = "56"
-width = "400"
-height = "60"
+x = "58"
+y = "96"
+width = "440"
+height = "56"
 text = "launcher.query"
-props = { color = "#FFFFFF", font_size = "24", font_weight = "800", align = "left" }
+props = { color = "#000000", font_size = "26", font_weight = "400", font_family = "Antonio", align = "left" }
 
 [[nodes]]
 id = "query_ph"
 type = "Text"
-x = "48"
-y = "56"
-width = "400"
-height = "60"
+x = "58"
+y = "96"
+width = "440"
+height = "56"
 text = "TYPE TO SEARCH"
 visible = "launcher.query == ''"
-props = { color = "#3F3F41", font_size = "19", font_weight = "800", align = "left" }
+props = { color = "#B9B9B9", font_size = "21", font_weight = "700", font_family = "Antonio", align = "left" }
 
-# Caret — red block after the measured query, blinking
+# Caret — red block glued to the measured query width (Antonio)
 [[nodes]]
 id = "caret"
 type = "Rectangle"
-x = "48 + text_width(launcher.query, 26)"
-y = "70"
-width = "4"
-height = "32"
+x = "58 + text_width(launcher.query, 26, 'Antonio')"
+y = "106"
+width = "5"
+height = "34"
 opacity = "sin(time * 5.2) > -0.2 ? 1 : 0.15"
-props = { background = "#FF1800" }
+props = { background = "#E60012" }
 
-# Count — red chip, white numeral, breathing
+# Count — black parallelogram chip, white hero numeral + star
 [[nodes]]
-id = "count_bg"
+id = "count_chip"
 type = "Rectangle"
-x = "464"
-y = "66"
-width = "72"
-height = "40"
-scale = "1 + 0.05 * sin(time * 2.3)"
+x = "616"
+y = "102"
+width = "82"
+height = "46"
+skew = "-12"
 visible = "launcher.results_count > 0"
-props = { background = "#DE0000" }
-animate = [{ property = "opacity", from = 0, duration_ms = 180, delay = 240, easing = "ease_out_quad" }]
+props = { background = "#000000", border = "2px #FFFFFF" }
+animate = [{ property = "opacity", from = 0, duration_ms = 160, delay = 220, easing = "ease_out_quad" }]
+
+[[nodes]]
+id = "count_star"
+type = "Polygon"
+x = "628"
+y = "116"
+width = "14"
+height = "14"
+rotation = "time * 60"
+visible = "launcher.results_count > 0"
+points = "7,0; 9,5; 14,7; 9,9; 7,14; 5,9; 0,7; 5,5"
+props = { background = "#FFD800" }
 
 [[nodes]]
 id = "count_text"
 type = "Text"
-x = "464"
-y = "66"
-width = "72"
-height = "40"
+x = "646"
+y = "102"
+width = "44"
+height = "46"
 text = "launcher.results_count"
 visible = "launcher.results_count > 0"
-props = { color = "#FFFFFF", font_size = "17", font_weight = "900", align = "center" }
-animate = [{ property = "opacity", from = 0, duration_ms = 180, delay = 280, easing = "ease_out_quad" }]
+props = { color = "#FFFFFF", font_size = "24", font_weight = "700", font_family = "Antonio", align = "center" }
+animate = [{ property = "opacity", from = 0, duration_ms = 160, delay = 260, easing = "ease_out_quad" }]
 
-# Results panel — the box the list lives in; top edge is a staircase wedge
+# Empty stamp — black plate, red frame, when the search comes up dry
 [[nodes]]
-id = "list_panel"
+id = "empty_stamp"
 type = "Rectangle"
-x = "18"
-y = "120"
-width = "538"
-height = "352"
-visible = "launcher.results_count > 0"
-props = { background = "#0C0C0D", border = "2px #FFFFFF" }
-animate = [{ property = "x", from = -80, duration_ms = 300, delay = 90, easing = "ease_out_expo" }, { property = "opacity", from = 0, duration_ms = 220, delay = 90, easing = "ease_out_quad" }]
-
-# Staircase wedge — replaces the straight top edge with a jagged diagonal
-# (16 steps rising 30px to the right, on the -12° family angle).
-# clip_y must clear the tallest step or the scissor eats the staircase.
-[[nodes]]
-id = "list_wedge"
-type = "Repeater"
-x = "18"
-y = "120"
-width = "560"
-height = "392"
-visible = "launcher.results_count > 0"
-props = { count = "16", gap = "0", item_height = "0", layout = "vertical", clip_y = "86" }
-delegate = "wedge_step"
-
-# Bite — bottom-right corner eaten out
-[[nodes]]
-id = "list_cut"
-type = "Rectangle"
-x = "538"
-y = "454"
-width = "36"
-height = "36"
-rotation = "-12"
-visible = "launcher.results_count > 0"
-props = { background = "#0C0C0D" }
-
-# Red tape — across the bottom outline
-[[nodes]]
-id = "list_tape"
-type = "Rectangle"
-x = "296"
-y = "469"
-width = "54"
-height = "6"
-rotation = "-12"
-visible = "launcher.results_count > 0"
-props = { background = "#FF1800" }
-
-# Sticker tab
-[[nodes]]
-id = "list_tab"
-type = "Rectangle"
-x = "10"
-y = "112"
-width = "18"
-height = "18"
-rotation = "-12"
-visible = "launcher.results_count > 0"
-props = { background = "#DE0000" }
-
-# Progress rail — white line + yellow dot (yellow = numbers/progress only)
-[[nodes]]
-id = "deco"
-type = "Rectangle"
-x = "564"
-y = "128 + clamp(launcher.selected_index / max(launcher.results_count - 1, 1), 0, 1) * 156"
-width = "2"
-height = "160"
-visible = "launcher.results_count > 0"
-props = { background = "#FFFFFF" }
-animate = [{ property = "opacity", from = 0, duration_ms = 240, delay = 360, easing = "ease_out_quad" }]
+x = "34"
+y = "250"
+width = "320"
+height = "58"
+skew = "-12"
+visible = "launcher.results_count == 0"
+props = { background = "#000000", border = "3px #E60012" }
+animate = [{ property = "x", from = -90, duration_ms = 280, delay = 120, easing = "ease_out_expo" }, { property = "opacity", from = 0, duration_ms = 200, delay = 120, easing = "ease_out_quad" }]
 
 [[nodes]]
-id = "deco_dot"
-type = "Rectangle"
-x = "560"
-y = "200 + clamp(launcher.selected_index / max(launcher.results_count - 1, 1), 0, 1) * 156"
-width = "10"
-height = "10"
-rotation = "45 + sin(time * 1.5) * 14"
-visible = "launcher.results_count > 0"
-props = { background = "#FFD800" }
-animate = [{ property = "opacity", from = 0, duration_ms = 200, delay = 420, easing = "ease_out_quad" }]
+id = "empty_stamp_text"
+type = "Text"
+x = "34"
+y = "250"
+width = "320"
+height = "58"
+text = "NO RESULTS"
+visible = "launcher.results_count == 0"
+props = { color = "#FFFFFF", font_size = "26", font_weight = "700", font_family = "Antonio", align = "center", outline = "2px #000000" }
+animate = [{ property = "opacity", from = 0, duration_ms = 200, delay = 200, easing = "ease_out_quad" }]
 
-# Selector echo — a second cyan slash on a softer spring, trailing behind
-[[nodes]]
-id = "selector_echo"
-type = "Rectangle"
-x = "30 + sin(time * 1.8 + 0.6) * 2"
-y = "124 + (launcher.selected_index - clamp(launcher.selected_index - 3, 0, launcher.results_count)) * 66"
-width = "10"
-height = "76"
-rotation = "-12 + sin(time * 2.6 + 0.4) * 2.5"
-visible = "launcher.results_count > 0"
-z = 1
-opacity = "0.35"
-props = { background = "#40E0E8" }
-animate = [
-  { property = "y", duration_ms = 260, easing = "spring", spring = { stiffness = 260, damping = 22, mass = 1 } },
-  { property = "scale", from = 0.4, duration_ms = 340, delay = 220, easing = "ease_out_back" },
-]
-
-# Selector — the cyan slash, shivering like a held blade
-[[nodes]]
-id = "selector"
-type = "Rectangle"
-x = "18 + sin(time * 1.8) * 2"
-y = "124 + (launcher.selected_index - clamp(launcher.selected_index - 3, 0, launcher.results_count)) * 66"
-width = "10"
-height = "76"
-rotation = "-12 + sin(time * 2.6) * 2.5"
-visible = "launcher.results_count > 0"
-z = 2
-props = { background = "#40E0E8" }
-animate = [
-  { property = "y", duration_ms = 160, easing = "spring", spring = { stiffness = 520, damping = 27, mass = 1 } },
-  { property = "scale", from = 0.4, duration_ms = 300, delay = 180, easing = "ease_out_back" },
-  { property = "opacity", from = 0, duration_ms = 160, delay = 180, easing = "ease_out_quad" },
-]
-
-# Results — straight text rows; the list scrolls, everything else holds
+# ---------------------------------------------------------------------
+# Results — P5 save-list: skewed white bars, No-tags, red numerals.
+# Selected = red slab on cyan/violet plate stack + film perforation.
+# ---------------------------------------------------------------------
 [[nodes]]
 id = "results"
 type = "Repeater"
-x = "28"
-y = "128 - clamp(launcher.selected_index - 3, 0, launcher.results_count) * 66"
-width = "520"
-height = "floor((window.height - 32 - 128) / 66) * 66"
+x = "34"
+y = "168 - clamp(launcher.selected_index - 3, 0, launcher.results_count) * 60"
+width = "552"
+height = "floor((window.height - 168 - 26) / 60) * 60"
 model = "launcher.results"
-delegate = "atlus_row"
-props = { gap = "10", item_height = "56", layout = "vertical", clip_y = "128" }
+delegate = "p5_row"
+props = { gap = "14", item_height = "46", layout = "vertical", clip_y = "168", clip_pad = "80" }
 
-# Preview — black panel tilted with the band, hero numeral inside
+# ---------------------------------------------------------------------
+# Preview — white-bordered black card, red kicker band, yellow hero
+# ---------------------------------------------------------------------
 [[nodes]]
-id = "preview_band"
+id = "preview_card"
 type = "Rectangle"
-x = "572"
-y = "128"
-width = "240"
-height = "42"
-rotation = "-1.3"
+x = "604"
+y = "170"
+width = "238"
+height = "356"
+skew = "-4"
 visible = "launcher.results_count > 0"
-props = { background = "#DE0000" }
-animate = [{ property = "x", from = "window.width + 60", duration_ms = 340, delay = 130, easing = "ease_out_expo" }]
+props = { background = "#0C0C0D", border = "3px #FFFFFF" }
+animate = [{ property = "x", from = "window.width + 60", duration_ms = 320, delay = 140, easing = "ease_out_expo" }, { property = "opacity", from = 0, duration_ms = 200, delay = 140, easing = "ease_out_quad" }]
 
-# Slashes sweeping inside the kicker band
+# Corner bite — black square eating the card's bottom-left
+[[nodes]]
+id = "preview_bite"
+type = "Rectangle"
+x = "590"
+y = "500"
+width = "30"
+height = "30"
+rotation = "-12"
+visible = "launcher.results_count > 0"
+props = { background = "#000000" }
+
+# Kicker — red parallelogram band across the card's top edge
+[[nodes]]
+id = "kicker_band"
+type = "Rectangle"
+x = "596"
+y = "154"
+width = "254"
+height = "34"
+skew = "-4"
+rotation = "-1.2"
+visible = "launcher.results_count > 0"
+props = { background = "#E60012", border = "3px #000000" }
+animate = [{ property = "x", from = "window.width + 60", duration_ms = 320, delay = 120, easing = "ease_out_expo" }]
+
 [[nodes]]
 id = "kicker_slash_a"
 type = "Rectangle"
-x = "606 + sin(time * 0.9) * 28"
-y = "134"
+x = "640 + sin(time * 0.9) * 26"
+y = "160"
 width = "4"
-height = "30"
+height = "22"
 rotation = "-12"
 visible = "launcher.results_count > 0"
 opacity = "0.4"
@@ -505,322 +404,407 @@ props = { background = "#FFFFFF" }
 [[nodes]]
 id = "kicker_slash_b"
 type = "Rectangle"
-x = "706 + sin(time * 0.9 + 2.4) * 28"
-y = "134"
+x = "760 + sin(time * 0.9 + 2.4) * 26"
+y = "160"
 width = "4"
-height = "30"
+height = "22"
 rotation = "-12"
 visible = "launcher.results_count > 0"
 opacity = "0.4"
 props = { background = "#FFFFFF" }
 
 [[nodes]]
-id = "preview_kicker"
+id = "kicker_text"
 type = "Text"
-x = "588"
-y = "128"
-width = "208"
-height = "42"
+x = "612"
+y = "154"
+width = "230"
+height = "34"
 text = "SELECTED"
 visible = "launcher.results_count > 0"
-props = { color = "#FFFFFF", font_size = "12", font_weight = "900", align = "left" }
-animate = [{ property = "opacity", from = 0, duration_ms = 200, delay = 260, easing = "ease_out_quad" }]
-
-[[nodes]]
-id = "preview_card"
-type = "Rectangle"
-x = "572"
-y = "170"
-width = "240"
-height = "278"
-rotation = "-1.3"
-visible = "launcher.results_count > 0"
-props = { background = "#101011", border = "2px #FFFFFF" }
-animate = [{ property = "x", from = "window.width + 60", duration_ms = 340, delay = 160, easing = "ease_out_expo" }]
-
-# Bite — top-left corner eaten out
-[[nodes]]
-id = "preview_cut"
-type = "Rectangle"
-x = "554"
-y = "152"
-width = "36"
-height = "36"
-rotation = "-12"
-visible = "launcher.results_count > 0"
-props = { background = "#0C0C0D" }
-
-# Red tape — across the right outline
-[[nodes]]
-id = "preview_tape"
-type = "Rectangle"
-x = "790"
-y = "238"
-width = "50"
-height = "6"
-rotation = "-12"
-visible = "launcher.results_count > 0"
-props = { background = "#FF1800" }
-
-# Sticker tab
-[[nodes]]
-id = "preview_tab"
-type = "Rectangle"
-x = "806"
-y = "440"
-width = "18"
-height = "18"
-rotation = "-12"
-visible = "launcher.results_count > 0"
-props = { background = "#DE0000" }
+props = { color = "#FFFFFF", font_size = "14", font_weight = "700", font_family = "Antonio", align = "left" }
+animate = [{ property = "opacity", from = 0, duration_ms = 180, delay = 240, easing = "ease_out_quad" }]
 
 [[nodes]]
 id = "p_name"
 type = "Text"
-x = "590"
-y = "188"
-width = "204"
-height = "56"
+x = "620"
+y = "206"
+width = "212"
+height = "58"
 text = "launcher.selected_result.name"
 visible = "launcher.results_count > 0"
-props = { color = "#FFFFFF", font_size = "20", font_weight = "800", align = "left" }
-animate = [{ property = "opacity", from = 0, duration_ms = 220, delay = 280, easing = "ease_out_quad" }]
+props = { color = "#FFFFFF", font_size = "22", font_weight = "700", font_family = "Antonio", align = "left" }
+animate = [{ property = "opacity", from = 0, duration_ms = 200, delay = 260, easing = "ease_out_quad" }]
 
 [[nodes]]
 id = "p_id"
 type = "Text"
-x = "590"
-y = "248"
-width = "204"
+x = "620"
+y = "264"
+width = "212"
 height = "16"
 text = "launcher.selected_result.id"
 visible = "launcher.results_count > 0"
-props = { color = "#9C9C9C", font_size = "11", font_weight = "500", align = "left" }
-animate = [{ property = "opacity", from = 0, duration_ms = 220, delay = 310, easing = "ease_out_quad" }]
-
-[[nodes]]
-id = "p_exec"
-type = "Text"
-x = "590"
-y = "270"
-width = "204"
-height = "28"
-text = "launcher.selected_result.exec"
-visible = "launcher.results_count > 0"
-props = { color = "#585858", font_size = "10", font_weight = "500", align = "left" }
-animate = [{ property = "opacity", from = 0, duration_ms = 220, delay = 340, easing = "ease_out_quad" }]
+props = { color = "#6E6E73", font_size = "10", font_weight = "400", align = "left" }
+animate = [{ property = "opacity", from = 0, duration_ms = 200, delay = 290, easing = "ease_out_quad" }]
 
 [[nodes]]
 id = "p_desc"
 type = "Text"
-x = "590"
-y = "300"
-width = "204"
-height = "48"
+x = "620"
+y = "288"
+width = "212"
+height = "76"
 text = "launcher.selected_result.description"
 visible = "launcher.selected_result.description != ''"
-props = { color = "#9C9C9C", font_size = "11", font_weight = "500", align = "left" }
-animate = [{ property = "opacity", from = 0, duration_ms = 220, delay = 370, easing = "ease_out_quad" }]
+props = { color = "rgba(255,255,255,0.72)", font_size = "11", font_weight = "400", font_family = "DejaVu Serif", align = "left" }
+animate = [{ property = "opacity", from = 0, duration_ms = 200, delay = 320, easing = "ease_out_quad" }]
 
-# Hero numeral — the selection index, stamped and alive
+[[nodes]]
+id = "p_exec"
+type = "Text"
+x = "620"
+y = "288"
+width = "212"
+height = "20"
+text = "launcher.selected_result.exec"
+visible = "launcher.selected_result.description == ''"
+props = { color = "#585858", font_size = "10", font_weight = "400", align = "left" }
+animate = [{ property = "opacity", from = 0, duration_ms = 200, delay = 320, easing = "ease_out_quad" }]
+
+# Hero numeral — the selection index, yellow, outlined, breathing
 [[nodes]]
 id = "p_hero"
 type = "Text"
-x = "588"
-y = "356"
-width = "208"
-height = "76"
+x = "612"
+y = "400"
+width = "222"
+height = "84"
 text = "launcher.selected_index"
-scale = "1 + 0.045 * sin(time * 3.4)"
-rotation = "sin(time * 1.7) * 1.6"
+scale = "1 + 0.04 * sin(time * 2.8)"
+rotation = "sin(time * 1.3) * 1.4"
 visible = "launcher.results_count > 0"
-props = { color = "#FFD800", font_size = "58", font_weight = "900", align = "right" }
-animate = [{ property = "opacity", from = 0, duration_ms = 260, delay = 400, easing = "ease_out_quad" }]
+props = { color = "#FFD800", font_size = "64", font_weight = "700", font_family = "Antonio", align = "right", outline = "3px #000000" }
+animate = [{ property = "opacity", from = 0, duration_ms = 220, delay = 360, easing = "ease_out_quad" }]
 
-# Halftone — printed diamond-dot texture, shimmering on the red field
 [[nodes]]
-id = "halftone_top"
-type = "Repeater"
-x = "578"
-y = "26"
+id = "p_hero_star"
+type = "Polygon"
+x = "616"
+y = "404"
+width = "18"
+height = "18"
+rotation = "time * 70"
+visible = "launcher.results_count > 0"
+opacity = "0.55 + 0.35 * sin(time * 2.4)"
+points = "9,0; 11,7; 18,9; 11,11; 9,18; 7,11; 0,9; 7,7"
+props = { background = "#FFD800" }
+
+# ---------------------------------------------------------------------
+# Footer — black action chips, right red slash
+# ---------------------------------------------------------------------
+[[nodes]]
+id = "chip_launch"
+type = "Rectangle"
+x = "34"
+y = "528"
+width = "120"
+height = "24"
+skew = "-12"
+props = { background = "#000000", border = "2px #FFFFFF" }
+
+[[nodes]]
+id = "chip_launch_text"
+type = "Text"
+x = "34"
+y = "528"
+width = "120"
+height = "24"
+text = "OK  LAUNCH"
+props = { color = "#FFFFFF", font_size = "11", font_weight = "700", font_family = "Antonio", align = "center" }
+
+[[nodes]]
+id = "chip_close"
+type = "Rectangle"
+x = "164"
+y = "528"
 width = "110"
-height = "60"
-props = { count = "8", gap = "0", item_height = "0", layout = "vertical", clip_y = "26" }
+height = "24"
+skew = "-12"
+props = { background = "#000000", border = "2px #FFFFFF" }
+
+[[nodes]]
+id = "chip_close_text"
+type = "Text"
+x = "164"
+y = "528"
+width = "110"
+height = "24"
+text = "ESC  CLOSE"
+props = { color = "#FFFFFF", font_size = "11", font_weight = "700", font_family = "Antonio", align = "center" }
+
+[[nodes]]
+id = "footer_slash"
+type = "Rectangle"
+x = "740"
+y = "530"
+width = "96"
+height = "10"
+rotation = "-12"
+skew = "-7"
+props = { background = "#E60012" }
+
+# Halftone — printed dots breathing in the black zone under the preview
+[[nodes]]
+id = "halftone"
+type = "Repeater"
+x = "600"
+y = "540"
+width = "240"
+height = "14"
+props = { count = "6", gap = "0", item_height = "0", layout = "vertical", clip_y = "540" }
 delegate = "dot_cell"
 
-# Halftone — quiet strip under the preview card
-[[nodes]]
-id = "halftone_bottom"
-type = "Repeater"
-x = "584"
-y = "456"
-width = "240"
-height = "12"
-props = { count = "6", gap = "0", item_height = "0", layout = "vertical", clip_y = "456" }
-delegate = "dot_cell_small"
-
-# Sparks — drifting diamonds along the base diagonal
+# Sparks — drifting stars along the base
 [[nodes]]
 id = "sparks"
 type = "Repeater"
-x = "0"
-y = "460"
-width = "840"
-height = "24"
-props = { count = "6", gap = "0", item_height = "0", layout = "vertical", clip_y = "460" }
+x = "250"
+y = "536"
+width = "420"
+height = "18"
+props = { count = "4", gap = "0", item_height = "0", layout = "vertical", clip_y = "536" }
 delegate = "spark"
 
-# Footer
-[[nodes]]
-id = "footer"
-type = "Text"
-x = "28"
-y = "490"
-width = "784"
-height = "16"
-text = "↑↓ NAVIGATE   ·   ⏎ LAUNCH   ·   ESC CLOSE"
-props = { color = "#585858", font_size = "10", font_weight = "700", align = "center" }
-animate = [{ property = "opacity", from = 0, duration_ms = 220, delay = 420, easing = "ease_out_quad" }]
-
-# ---------------------------------------------------------------------------
-# Row delegate — quiet body, loud (and alive) selection.
-# The y spring is the scroll transition: the viewport band jumps, instances
-# glide to their new rows. Targets are static between scrolls, so springs
-# settle and the loop stays idle.
-# ---------------------------------------------------------------------------
-[components.atlus_row]
-  [[components.atlus_row.animate]]
+# ---------------------------------------------------------------------
+# Row delegate — the P5 save-list row.
+# Plate stack (violet under cyan) pops in behind the red slab; the white
+# bar carries a black No-tag chip, red hero numeral, black Antonio name.
+# y spring = scroll transition; scale spring = selection pop. Targets are
+# state-driven (no time), so springs settle and idle cost stays zero.
+# ---------------------------------------------------------------------
+[components.p5_row]
+  [[components.p5_row.animate]]
   property = "opacity"
   from = 0
-  duration_ms = 200
-  delay = "index * 24"
+  duration_ms = 180
+  delay = "index * 22"
   easing = "ease_out_quad"
 
-  [[components.atlus_row.animate]]
+  [[components.p5_row.animate]]
   property = "x"
-  from = -56
+  from = -70
   duration_ms = 260
-  delay = "index * 24"
+  delay = "index * 22"
   easing = "ease_out_expo"
 
-  [[components.atlus_row.animate]]
+  [[components.p5_row.animate]]
   property = "y"
   duration_ms = 240
   easing = "spring"
   spring = { stiffness = 480, damping = 26, mass = 1 }
 
-  [[components.atlus_row.nodes]]
-  id = "row_bg"
+  [[components.p5_row.animate]]
+  property = "scale"
+  duration_ms = 200
+  easing = "spring"
+  spring = { stiffness = 420, damping = 24, mass = 1 }
+
+  # Violet plate — bottom of the selection stack
+  [[components.p5_row.nodes]]
+  id = "plate_violet"
+  type = "Rectangle"
+  x = "18"
+  y = "13"
+  width = "552"
+  height = "46"
+  skew = "-18"
+  visible = "is_selected"
+  props = { background = "#7B4CE0" }
+
+  # Cyan plate — middle of the stack
+  [[components.p5_row.nodes]]
+  id = "plate_cyan"
+  type = "Rectangle"
+  x = "9"
+  y = "6"
+  width = "552"
+  height = "46"
+  skew = "-18"
+  visible = "is_selected"
+  props = { background = "#29ABE2" }
+
+  # The bar itself — white, or the red slab when selected
+  [[components.p5_row.nodes]]
+  id = "row_bar"
   type = "Rectangle"
   x = "0"
   y = "0"
-  width = "520"
-  height = "56"
-  scale = "is_selected ? 1.045 : 1.0"
-  rotation = "is_selected ? sin(time * 3.3) * 0.8 : 0"
-  props = { background = "is_selected ? #DE0000 : transparent" }
-  animate = [{ property = "scale", duration_ms = 140, easing = "spring", spring = { stiffness = 520, damping = 26, mass = 1 } }]
+  width = "552"
+  height = "46"
+  skew = "-18"
+  scale = "is_selected ? 1.05 : 1.0"
+  props = { background = "is_selected ? #E60012 : #FFFFFF", border = "is_selected ? '0px #000000' : '3px #000000'" }
   on_click = "activate(index)"
 
-  [[components.atlus_row.nodes]]
-  id = "row_index"
-  type = "Text"
-  x = "6"
-  y = "2"
-  width = "62"
-  height = "52"
-  text = "index"
-  scale = "is_selected ? 1 + 0.05 * sin(time * 4.6 + 0.5) : 1.0"
-  props = { color = "is_selected ? #FFD800 : #4E4E52", font_size = "is_selected ? 34 : 24", font_weight = "900", align = "right" }
-
-  [[components.atlus_row.nodes]]
-  id = "row_name"
-  type = "Text"
-  x = "80"
-  y = "6"
-  width = "428"
-  height = "28"
-  text = "item_name"
-  props = { color = "#FFFFFF", font_size = "is_selected ? 17 : 14", font_weight = "is_selected ? 800 : 600", align = "left" }
-
-  [[components.atlus_row.nodes]]
-  id = "row_desc"
-  type = "Text"
-  x = "80"
-  y = "32"
-  width = "428"
-  height = "16"
-  text = "item_description"
-  visible = "item_description != ''"
-  props = { color = "is_selected ? rgba(255,255,255,0.75) : #8A8A8A", font_size = "10", font_weight = "500", align = "left" }
-
-  [[components.atlus_row.nodes]]
-  id = "row_id"
-  type = "Text"
-  x = "80"
-  y = "32"
-  width = "428"
-  height = "16"
-  text = "item_id"
-  visible = "item_description == ''"
-  props = { color = "is_selected ? rgba(255,255,255,0.6) : #585858", font_size = "10", font_weight = "500", align = "left" }
-
-# ---------------------------------------------------------------------------
-# Decorative delegates
-# ---------------------------------------------------------------------------
-[components.wedge_step]
-  # One stair of the jagged top edge: white tread on the new diagonal,
-  # black riser filling down over the panel's straight border.
-  [[components.wedge_step.nodes]]
-  id = "tread"
+  # Film perforation — black sprockets down the red slab's left edge
+  [[components.p5_row.nodes]]
+  id = "perf_a"
   type = "Rectangle"
-  x = "index * 33.6"
-  y = "-2 - (index + 1) * 1.875"
-  width = "35"
-  height = "6"
+  x = "12"
+  y = "7"
+  width = "7"
+  height = "7"
+  visible = "is_selected"
+  props = { background = "#000000" }
+
+  [[components.p5_row.nodes]]
+  id = "perf_b"
+  type = "Rectangle"
+  x = "12"
+  y = "20"
+  width = "7"
+  height = "7"
+  visible = "is_selected"
+  props = { background = "#000000" }
+
+  [[components.p5_row.nodes]]
+  id = "perf_c"
+  type = "Rectangle"
+  x = "12"
+  y = "33"
+  width = "7"
+  height = "7"
+  visible = "is_selected"
+  props = { background = "#000000" }
+
+  # Star sparkle at the bar's end
+  [[components.p5_row.nodes]]
+  id = "row_star"
+  type = "Polygon"
+  x = "524"
+  y = "15"
+  width = "16"
+  height = "16"
+  rotation = "time * 55"
+  visible = "is_selected"
+  points = "8,0; 10,6; 16,8; 10,10; 8,16; 6,10; 0,8; 6,6"
   props = { background = "#FFFFFF" }
 
-  [[components.wedge_step.nodes]]
-  id = "riser"
+  # No-tag — black chip hanging off the left edge (P5's "No.3")
+  [[components.p5_row.nodes]]
+  id = "no_chip"
   type = "Rectangle"
-  x = "index * 33.6"
-  y = "4 - (index + 1) * 1.875"
-  width = "34"
-  height = "6 + (index + 1) * 1.875"
-  props = { background = "#0C0C0D" }
+  x = "-46"
+  y = "14"
+  width = "48"
+  height = "22"
+  skew = "-18"
+  props = { background = "#000000", border = "2px #FFFFFF" }
+
+  [[components.p5_row.nodes]]
+  id = "no_label"
+  type = "Text"
+  x = "-42"
+  y = "14"
+  width = "20"
+  height = "22"
+  text = "No."
+  props = { color = "rgba(255,255,255,0.75)", font_size = "9", font_weight = "400", font_family = "Antonio", align = "left" }
+
+  [[components.p5_row.nodes]]
+  id = "no_num"
+  type = "Text"
+  x = "-24"
+  y = "14"
+  width = "24"
+  height = "22"
+  text = "index"
+  props = { color = "#FFFFFF", font_size = "13", font_weight = "700", font_family = "Antonio", align = "right" }
+
+  # Red hero numeral (white on the selected slab)
+  [[components.p5_row.nodes]]
+  id = "row_index"
+  type = "Text"
+  x = "34"
+  y = "0"
+  width = "52"
+  height = "46"
+  text = "index"
+  props = { color = "is_selected ? #FFFFFF : #E60012", font_size = "is_selected ? 28 : 24", font_weight = "700", font_family = "Antonio", align = "right" }
+
+  # Name — black on white, white on red
+  [[components.p5_row.nodes]]
+  id = "row_name"
+  type = "Text"
+  x = "98"
+  y = "4"
+  width = "400"
+  height = "24"
+  text = "item_name"
+  props = { color = "is_selected ? #FFFFFF : #000000", font_size = "is_selected ? 18 : 16", font_weight = "700", font_family = "Antonio", align = "left" }
+
+  # Description — quiet serif line
+  [[components.p5_row.nodes]]
+  id = "row_desc"
+  type = "Text"
+  x = "99"
+  y = "27"
+  width = "400"
+  height = "15"
+  text = "item_description"
+  visible = "item_description != ''"
+  props = { color = "is_selected ? rgba(255,255,255,0.78) : #5A5A5E", font_size = "10", font_weight = "400", font_family = "DejaVu Serif", align = "left" }
+
+  # Fallback: exec id when there is no description
+  [[components.p5_row.nodes]]
+  id = "row_id"
+  type = "Text"
+  x = "99"
+  y = "27"
+  width = "400"
+  height = "15"
+  text = "item_id"
+  visible = "item_description == ''"
+  props = { color = "is_selected ? rgba(255,255,255,0.6) : #8A8A8E", font_size = "10", font_weight = "400", align = "left" }
+
+# ---------------------------------------------------------------------
+# Decorative delegates
+# ---------------------------------------------------------------------
+[components.perf_hole]
+  [[components.perf_hole.nodes]]
+  id = "hole"
+  type = "Rectangle"
+  x = "0"
+  y = "index * 26"
+  width = "10"
+  height = "10"
+  rotation = "-12"
+  opacity = "0.6"
+  props = { background = "#FFFFFF" }
 
 [components.dot_cell]
   [[components.dot_cell.nodes]]
   id = "dot"
   type = "Rectangle"
-  x = "(index % 4) * 24"
-  y = "floor(index / 4) * 22"
-  width = "7"
-  height = "7"
+  x = "index * 42"
+  y = "2"
+  width = "6"
+  height = "6"
   rotation = "45"
-  opacity = "0.3 + 0.18 * sin(time * 1.7 + index * 0.9)"
-  props = { background = "#FFFFFF" }
-
-[components.dot_cell_small]
-  [[components.dot_cell_small.nodes]]
-  id = "dot"
-  type = "Rectangle"
-  x = "index * 38"
-  y = "0"
-  width = "5"
-  height = "5"
-  rotation = "45"
-  opacity = "0.14 + 0.1 * sin(time * 1.4 + index * 1.1)"
+  opacity = "0.16 + 0.1 * sin(time * 1.5 + index * 1.1)"
   props = { background = "#FFFFFF" }
 
 [components.spark]
   [[components.spark.nodes]]
-  id = "spark_dot"
-  type = "Rectangle"
-  x = "60 + index * 132 + sin(time * 0.35 + index * 2.1) * 26"
-  y = "468 + cos(time * 0.4 + index * 1.7) * 7"
-  width = "6"
-  height = "6"
-  rotation = "45 + sin(time * 0.8 + index) * 20"
-  opacity = "0.1 + 0.08 * sin(time * 1.1 + index * 0.7)"
+  id = "spark_star"
+  type = "Polygon"
+  x = "index * 108 + sin(time * 0.4 + index * 2.1) * 30"
+  y = "4 + cos(time * 0.45 + index * 1.7) * 6"
+  width = "10"
+  height = "10"
+  rotation = "time * 40 + index * 30"
+  opacity = "0.12 + 0.1 * sin(time * 1.2 + index * 0.7)"
+  points = "5,0; 6,3.5; 10,5; 6,6.5; 5,10; 4,6.5; 0,5; 4,3.5"
   props = { background = "#FFFFFF" }

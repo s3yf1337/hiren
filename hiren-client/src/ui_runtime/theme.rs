@@ -4,7 +4,8 @@
 //! Nodes can be:
 //!   - Container   (layout, stacking, clipping)
 //!   - Rectangle   (fill, radius, border, shadow)
-//!   - Text        (content, font, size, color, align)
+//!   - Polygon     (fill, border; `points` in node-local coords)
+//!   - Text        (content, family, size, color, align, outline, hard shadow)
 //!   - Image/Icon  (icon name, path, size)
 //!   - TextInput   (bound to launcher.query)
 //!   - Repeater    (model = launcher.results, delegate = component id)
@@ -105,7 +106,11 @@ pub struct NodeDef {
 
     // transform (bindings, applied around the node center)
     #[serde(default)] pub rotation: Option<String>, // degrees
+    #[serde(default)] pub skew: Option<String>,     // horizontal shear, degrees (parallelogram lean)
     #[serde(default)] pub scale: Option<String>,    // uniform factor
+    /// Polygon vertices in node-local coordinates, `;`-separated pairs:
+    /// `points = "0,0; 120,6; 120,46; 0,52"` (each coordinate is a binding).
+    #[serde(default)] pub points: Option<String>,
 
     // animation overrides
     #[serde(default)] pub animate: Vec<AnimateDef>,
@@ -240,7 +245,9 @@ impl Theme {
                     text: Some("launcher.query".into()),
                     placeholder: None,
                     rotation: None,
+                    skew: None,
                     scale: None,
+                    points: None,
                     animate: vec![],
                     z: None,
                     on_click: None,

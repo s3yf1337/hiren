@@ -194,7 +194,22 @@ A property value is either a **literal** (`x = 32`, `text = "Firefox"`) or an
 - comparisons `== != < <= > >=`, boolean `&& || !`, ternary `cond ? a : b` (lazy —
   a ternary must be the whole expression; inside larger arithmetic, use `min`/`max`)
 - state paths (`launcher.*`, `window.*`, `time`), repeater locals
-- `text_width(text, size)` — measured width, inlines into arithmetic
+- `text_width(text, size[, family])` — measured width, inlines into arithmetic
+
+### Geometry & type primitives
+
+- `skew = "-18"` — horizontal shear (degrees) about the node center; combined with
+  `rotation` it turns rectangles into the slanted parallelograms P5 builds its
+  lists from. Hit-testing, bounds and the scissor fast path all honor it.
+- `type = "Polygon"` + `points = "0,0; 120,8; 120,52; 0,60"` — arbitrary filled
+  shape (stars, torn jags, slashes). `;`-separated `x,y` pairs in node-local
+  coordinates, each coordinate a binding. Supports `background`/`fill`, `border`,
+  `shadow` (hard offset for polygons), transforms and `on_click` (point-in-polygon).
+- Text styling: `font_family = "Antonio"` (system font via fontdb; falls back to
+  sans when missing), `outline = "3px #000000"` (comic outline, ring blits),
+  `text_shadow = "3px 3px #000000"` (hard sticker offset under the outline).
+- Repeater prop `clip_pad = "80"` — widens the fixed scissor band horizontally so
+  delegate chrome (tag chips hanging off rows, plate stacks) is not clipped.
 - `initial(text)` — first grapheme (icon chips)
 - color literals in props: `#rgb`, `#rrggbb`, `#rrggbbaa`, `rgb()/rgba()`, CSS names, `transparent`
 - `background = "linear-gradient(160deg, #1e1e2e, #181825)"` (CSS-style angle)

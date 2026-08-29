@@ -128,7 +128,7 @@ fn print_help() {
 // ---------------------------------------------------------------------------
 
 fn demo_state(state: &Rc<ObservableState>) {
-    let entries = vec![
+    let mut entries = vec![
         hiren_shared::AppEntry::drun(
             "firefox".into(),
             "Firefox".into(),
@@ -153,6 +153,15 @@ fn demo_state(state: &Rc<ObservableState>) {
         ),
         hiren_shared::AppEntry::run("calc".into(), "Calculator 4*7".into(), "gnome-calculator".into()),
     ];
+    for i in 0..10 {
+        entries.push(hiren_shared::AppEntry::drun(
+            format!("app{i}"),
+            format!("Filler App {i}"),
+            format!("app{i}"),
+            Some("QA filler entry for scroll testing".into()),
+            String::new(),
+        ));
+    }
     state.update(|s| {
         s.query = "f".into();
         s.set_results(entries);

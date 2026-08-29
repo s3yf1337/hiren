@@ -55,8 +55,12 @@ pub struct ResolvedNode {
     pub radius: f32,
     /// Rotation in degrees around the node center.
     pub rotation: f32,
+    /// Horizontal shear in degrees around the node center (parallelogram lean).
+    pub skew: f32,
     /// Uniform scale factor around the node center.
     pub scale: f32,
+    /// Polygon vertices in node-local coordinates (`Polygon` kind only).
+    pub points: Vec<(f32, f32)>,
     /// Animation declarations (with per-instance delays already resolved).
     pub animate: Vec<AnimateDef>,
     /// Optional scissor rect (x, y, w, h) the node is clipped to (repeater
@@ -75,7 +79,8 @@ impl ResolvedNode {
             .unwrap_or_else(|| tiny_skia::Rect::from_xywh(0.0, 0.0, 1.0, 1.0).unwrap())
     }
 
-    /// Whether the point hits this node, inverse-transformed for rotation/scale.
+    /// Whether the point hits this node, inverse-transformed for
+    /// skew/rotation/scale (polygon nodes test point-in-polygon).
     pub fn hit(&self, px: f64, py: f64) -> bool {
         let (mut x, mut y) = (px as f32, py as f32);
         let (cx, cy) = (self.x + self.width / 2.0, self.y + self.height / 2.0);
@@ -89,7 +94,17 @@ impl ResolvedNode {
             x = cx + dx * rad.cos() - dy * rad.sin();
             y = cy + dx * rad.sin() + dy * rad.cos();
         }
-        if x < self.x || x > self.x + self.width || y < self.y || y > self.y + self.height {
+        if self.skew.abs() > 1e-4 {
+            // inverse of x' = x + tan(skew)·y about the center
+            let k = self.skew.to_radians().tan();
+            let (lx, ly) = (x - cx, y - cy);
+            x = cx + (lx - k * ly);
+        }
+        let mut inside = x >= self.x && x <= self.x + self.width && y >= self.y && y <= self.y + self.height;
+        if inside && !self.points.is_empty() {
+            inside = point_in_polygon(x - self.x, y - self.y, &self.points);
+        }
+        if !inside {
             return false;
         }
         match self.clip {
@@ -97,6 +112,28 @@ impl ResolvedNode {
             None => true,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Geometry helpers
+// ---------------------------------------------------------------------------
+
+/// Even-odd ray-cast test in polygon-local coordinates.
+fn point_in_polygon(px: f32, py: f32, pts: &[(f32, f32)]) -> bool {
+    if pts.len() < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut j = pts.len() - 1;
+    for i in 0..pts.len() {
+        let (xi, yi) = pts[i];
+        let (xj, yj) = pts[j];
+        if (yi > py) != (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
 }
 
 // ---------------------------------------------------------------------------
@@ -159,7 +196,8 @@ mod tests {
             x: 100.0, y: 100.0, width: 100.0, height: 50.0,
             opacity: 1.0, z: 0, visible: true, props: HashMap::new(),
             text: None, color: None, background: None, radius: 0.0,
-            rotation: 0.0, scale: 1.0, animate: vec![], action: None, index: None,
+            rotation: 0.0, skew: 0.0, scale: 1.0, points: vec![],
+            animate: vec![], action: None, index: None,
             clip: None,
         };
         assert!(n.hit(120.0, 110.0));

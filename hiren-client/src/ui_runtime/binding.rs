@@ -41,7 +41,8 @@ impl Diag {
 pub type SharedDiag = Rc<RefCell<Diag>>;
 
 /// Text measurement hook (implemented by the text engine; optional).
-pub type Measurer<'a> = &'a dyn Fn(&str, f32) -> f32;
+/// Arguments: (text, font_size, family) — empty family = default sans-serif.
+pub type Measurer<'a> = &'a dyn Fn(&str, f32, &str) -> f32;
 
 /// Context available during binding evaluation.
 #[derive(Clone)]
@@ -155,14 +156,15 @@ fn eval_inner(expr: &str, ctx: &mut EvalContext) -> String {
         return v.to_string();
     }
 
-    // text_width(expr, size)
+    // text_width(expr, size[, family])
     if expr.starts_with("text_width(") && expr.ends_with(')') {
         if let Some(args) = split_top_args(&expr["text_width(".len()..expr.len() - 1]) {
             if args.len() >= 2 {
                 let text = eval_inner(args[0].trim(), ctx);
                 let size = eval_f32(args[1].trim(), ctx, 15.0);
+                let family = if args.len() >= 3 { eval_inner(args[2].trim(), ctx) } else { String::new() };
                 if let Some(m) = ctx.measure {
-                    let w = m(&text, size);
+                    let w = m(&text, size, &family);
                     return format!("{}", w.round());
                 }
                 return "0".into();
@@ -333,8 +335,9 @@ fn substitute_paths(expr: &str, ctx: &mut EvalContext) -> String {
                     if list.len() >= 2 {
                         let text = eval_inner(list[0].trim(), ctx);
                         let size = eval_f32(list[1].trim(), ctx, 15.0);
+                        let family = if list.len() >= 3 { eval_inner(list[2].trim(), ctx) } else { String::new() };
                         if let Some(m) = ctx.measure {
-                            value = m(&text, size) as f64;
+                            value = m(&text, size, &family) as f64;
                         }
                     }
                 }

@@ -14,7 +14,7 @@ use tiny_skia::{
 
 use super::color::{parse_color_str, Color};
 use super::node::ResolvedNode;
-use super::text::TextEngine;
+use super::text::{TextEngine, TextStyle};
 
 pub struct Renderer {
     pub text: TextEngine,
@@ -107,17 +107,35 @@ impl Renderer {
         pixmap
     }
 
-    /// Axis-aligned bounds of a node after its rotation/scale transform
-    /// (rotation and uniform scale act about the node center).
+    /// Axis-aligned bounds of a node after its skew/rotation/scale transform
+    /// (all act about the node center). Polygon nodes also include their
+    /// transformed vertices so nothing sticks out of the fast-path bounds.
     fn transformed_bounds(node: &ResolvedNode) -> (f32, f32, f32, f32) {
-        let (w, h) = (node.width * node.scale, node.height * node.scale);
-        let rad = node.rotation.to_radians();
-        let (c, s) = (rad.cos().abs(), rad.sin().abs());
-        let hx = (w * c + h * s) * 0.5;
-        let hy = (w * s + h * c) * 0.5;
-        let cx = node.x + node.width * 0.5;
-        let cy = node.y + node.height * 0.5;
-        (cx - hx, cy - hy, cx + hx, cy + hy)
+        let t = Self::node_transform(node);
+        let rect = node.rect();
+        let corners = [
+            (rect.x(), rect.y()),
+            (rect.x() + rect.width(), rect.y()),
+            (rect.x() + rect.width(), rect.y() + rect.height()),
+            (rect.x(), rect.y() + rect.height()),
+        ];
+        let mut xs: Vec<f32> = Vec::with_capacity(4 + node.points.len());
+        let mut ys: Vec<f32> = Vec::with_capacity(4 + node.points.len());
+        for (px, py) in corners {
+            let mut p = tiny_skia::Point::from_xy(px, py);
+            t.map_point(&mut p);
+            xs.push(p.x);
+            ys.push(p.y);
+        }
+        for (lx, ly) in &node.points {
+            let mut p = tiny_skia::Point::from_xy(node.x + lx, node.y + ly);
+            t.map_point(&mut p);
+            xs.push(p.x);
+            ys.push(p.y);
+        }
+        let (x0, x1) = (xs.iter().cloned().fold(f32::INFINITY, f32::min), xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max));
+        let (y0, y1) = (ys.iter().cloned().fold(f32::INFINITY, f32::min), ys.iter().cloned().fold(f32::NEG_INFINITY, f32::max));
+        (x0, y0, x1, y1)
     }
 
     fn node_transform_with_scale(node: &ResolvedNode, scale: f32) -> Transform {
@@ -130,16 +148,19 @@ impl Renderer {
 
     #[allow(clippy::only_used_in_recursion)]
     fn node_transform(node: &ResolvedNode) -> Transform {
-        if node.rotation.abs() < 1e-4 && (node.scale - 1.0).abs() < 1e-4 {
+        if node.rotation.abs() < 1e-4 && (node.scale - 1.0).abs() < 1e-4 && node.skew.abs() < 1e-4 {
             return Transform::identity();
         }
         let cx = node.x + node.width / 2.0;
         let cy = node.y + node.height / 2.0;
-        // p' = T(c) · R · S · T(-c) · p   (rotate/scale about the node center)
+        // p' = T(c) · R · S · K · T(-c) · p  (skew/scale/rotate about the node
+        // center; K is a horizontal shear, skew in degrees).
+        let k = node.skew.to_radians().tan();
         Transform::identity()
             .pre_concat(Transform::from_translate(cx, cy))
             .pre_concat(Transform::from_rotate(node.rotation))
             .pre_concat(Transform::from_scale(node.scale, node.scale))
+            .pre_concat(Transform::from_skew(k, 0.0))
             .pre_concat(Transform::from_translate(-cx, -cy))
     }
 
@@ -147,34 +168,67 @@ impl Renderer {
         let t = Self::node_transform_with_scale(node, scale);
         let opacity = node.opacity.clamp(0.0, 1.0);
 
-        // Shadow: "dx dy blur color" — three feathered layers.
+        // Shape: polygon path when `points` resolve to ≥3 vertices, else the
+        // (rounded) rect. Fill, shadow and border all use the same shape.
+        let poly = polygon_path(node);
+        let shape = |expand: f32| -> tiny_skia::Path {
+            match &poly {
+                Some(_) if expand.abs() < 0.01 => poly.clone().unwrap(),
+                _ => rounded_rect_path(
+                    Rect::from_xywh(
+                        node.x - expand,
+                        node.y - expand,
+                        (node.width + expand * 2.0).max(1.0),
+                        (node.height + expand * 2.0).max(1.0),
+                    )
+                    .unwrap_or_else(|| Rect::from_xywh(0.0, 0.0, 1.0, 1.0).unwrap()),
+                    node.radius + expand,
+                ),
+            }
+        };
+
+        // Shadow: "dx dy blur color" — hard offset for polygons (comic style),
+        // three feathered layers for rects.
         if let Some(shadow) = node.props.get("shadow") {
             if let Some((sx, sy, blur, sr, sg, sb, sa)) = parse_shadow(shadow) {
                 let shadow_alpha = (sa as f32 * opacity) as u8;
                 if shadow_alpha > 2 {
-                    for i in 0..3 {
-                        let f = i as f32 / 2.0; // 0, 0.5, 1
-                        let expand = blur * f * 0.5;
-                        let layer_alpha = (shadow_alpha as f32 * (0.35 - f * 0.22).max(0.06)) as u8;
+                    if poly.is_some() {
+                        // Hard offset duplicate of the polygon (no blur).
                         let mut paint = Paint::default();
-                        paint.set_color_rgba8(sr, sg, sb, layer_alpha);
+                        paint.set_color_rgba8(sr, sg, sb, shadow_alpha);
                         paint.anti_alias = true;
-                        let rect = Rect::from_xywh(
-                            node.x + sx - expand,
-                            node.y + sy - expand,
-                            (node.width + expand * 2.0).max(1.0),
-                            (node.height + expand * 2.0).max(1.0),
-                        );
-                        let Some(rect) = rect else { continue };
-                        let path = rounded_rect_path(rect, (node.radius + expand).max(0.0));
+                        let path = polygon_path_offset(node, sx, sy).unwrap_or_else(|| shape(0.0));
                         pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, t, None);
+                    } else {
+                        for i in 0..3 {
+                            let f = i as f32 / 2.0; // 0, 0.5, 1
+                            let expand = blur * f * 0.5;
+                            let layer_alpha = (shadow_alpha as f32 * (0.35 - f * 0.22).max(0.06)) as u8;
+                            let mut paint = Paint::default();
+                            paint.set_color_rgba8(sr, sg, sb, layer_alpha);
+                            paint.anti_alias = true;
+                            let rect = Rect::from_xywh(
+                                node.x + sx - expand,
+                                node.y + sy - expand,
+                                (node.width + expand * 2.0).max(1.0),
+                                (node.height + expand * 2.0).max(1.0),
+                            );
+                            let Some(rect) = rect else { continue };
+                            let path = rounded_rect_path(rect, (node.radius + expand).max(0.0));
+                            pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, t, None);
+                        }
                     }
                 }
             }
         }
 
-        // Background: solid color or linear-gradient.
+        // Background: solid color or linear-gradient. Plain axis-aligned
+        // rectangles skip path machinery entirely (fill_rect fast blit) —
+        // they dominate node counts, and AA path fills cost ~2x here.
         let bg_raw = node.props.get("background").or_else(|| node.props.get("fill"));
+        let solid_bg = bg_raw.and_then(|c| parse_color_str(c.trim()));
+        let plain_rect = poly.is_none() && node.radius <= 0.5;
         if let Some(bg_raw) = bg_raw {
             let bg = bg_raw.trim();
             if bg.starts_with("linear-gradient") {
@@ -182,15 +236,21 @@ impl Renderer {
                     let mut paint = Paint::default();
                     paint.shader = shader;
                     paint.anti_alias = true;
-                    let rect = node.rect();
-                    let path = rounded_rect_path(rect, node.radius);
-                    pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, t, None);
+                    pixmap.fill_path(&shape(0.0), &paint, tiny_skia::FillRule::Winding, t, None);
                 }
-            } else if let Some((r, g, b, a)) = parse_color_str(bg) {
-                fill_rect(pixmap, node, t, r, g, b, (a as f32 * opacity) as u8);
+            } else if let Some((r, g, b, a)) = solid_bg {
+                if plain_rect {
+                    fill_rect(pixmap, node, t, r, g, b, (a as f32 * opacity) as u8);
+                } else {
+                    fill_shape(pixmap, &shape(0.0), t, r, g, b, (a as f32 * opacity) as u8);
+                }
             }
         } else if let Some((r, g, b, a)) = node.background {
-            fill_rect(pixmap, node, t, r, g, b, (a as f32 * opacity) as u8);
+            if plain_rect {
+                fill_rect(pixmap, node, t, r, g, b, (a as f32 * opacity) as u8);
+            } else {
+                fill_shape(pixmap, &shape(0.0), t, r, g, b, (a as f32 * opacity) as u8);
+            }
         }
 
         // Image (PNG file via `src` prop).
@@ -205,18 +265,40 @@ impl Renderer {
                 let size = node.props.get("font_size").and_then(|s| s.trim().parse::<f32>().ok()).unwrap_or(15.0);
                 let align = node.props.get("align").map(|s| s.as_str()).unwrap_or("left");
                 let weight = TextEngine::weight_of(&node.props);
+                let family = node.props.get("font_family").cloned().unwrap_or_default();
+                // Comic outline: "4px #0C0C0D"; hard sticker shadow: "4px 5px #0C0C0D".
+                let outline = node
+                    .props
+                    .get("outline")
+                    .and_then(|s| parse_border(s))
+                    .map(|(w, r, g, b, a)| (w, (r, g, b, a)));
+                let hard_shadow = node
+                    .props
+                    .get("text_shadow")
+                    .and_then(|s| parse_shadow(s))
+                    .map(|(dx, dy, _, r, g, b, a)| (dx, dy, (r, g, b, a)));
+                let style = TextStyle::new(&family, outline, hard_shadow);
                 // rasterize text at physical resolution for crisp hidpi output
-                if let Some(sub) = self.text.render(text, node.width * scale, node.height * scale, size * scale, weight, align, color) {
+                if let Some((sub, margin)) = self.text.render(
+                    text,
+                    node.width * scale,
+                    node.height * scale,
+                    size * scale,
+                    weight,
+                    align,
+                    color,
+                    &style,
+                ) {
                     let paint = PixmapPaint {
                         opacity,
                         blend_mode: tiny_skia::BlendMode::SourceOver,
-                        quality: if scale == 1.0 && node.rotation.abs() < 1e-4 && (node.scale - 1.0).abs() < 1e-4 {
+                        quality: if scale == 1.0 && node.rotation.abs() < 1e-4 && (node.scale - 1.0).abs() < 1e-4 && node.skew.abs() < 1e-4 {
                             tiny_skia::FilterQuality::Nearest
                         } else {
                             tiny_skia::FilterQuality::Bilinear
                         },
                     };
-                    let tt = t.pre_translate(node.x, node.y);
+                    let tt = t.pre_translate(node.x - margin / scale, node.y - margin / scale);
                     pixmap.draw_pixmap(0, 0, sub.as_ref(), &paint, tt, None);
                 }
             }
@@ -230,10 +312,12 @@ impl Renderer {
                     let mut paint = Paint::default();
                     paint.set_color_rgba8(br, bgc, bb, alpha);
                     paint.anti_alias = true;
-                    let path = rounded_rect_path(node.rect(), node.radius);
-                    let mut stroke = tiny_skia::Stroke::default();
-                    stroke.width = bw;
-                    pixmap.stroke_path(&path, &paint, &stroke, t, None);
+                    let stroke = tiny_skia::Stroke {
+                        width: bw,
+                        line_join: tiny_skia::LineJoin::Miter,
+                        ..tiny_skia::Stroke::default()
+                    };
+                    pixmap.stroke_path(&shape(0.0), &paint, &stroke, t, None);
                 }
             }
         }
@@ -266,6 +350,26 @@ impl Renderer {
     }
 }
 
+/// Polygon path from node-local vertices (offset by the node position).
+fn polygon_path(node: &ResolvedNode) -> Option<tiny_skia::Path> {
+    polygon_path_offset(node, 0.0, 0.0)
+}
+
+/// Polygon path offset by (dx, dy) in logical space.
+fn polygon_path_offset(node: &ResolvedNode, dx: f32, dy: f32) -> Option<tiny_skia::Path> {
+    if node.points.len() < 3 {
+        return None;
+    }
+    let mut pb = PathBuilder::new();
+    let (x0, y0) = node.points[0];
+    pb.move_to(node.x + x0 + dx, node.y + y0 + dy);
+    for (px, py) in &node.points[1..] {
+        pb.line_to(node.x + px + dx, node.y + py + dy);
+    }
+    pb.close();
+    pb.finish()
+}
+
 fn fill_rect(pixmap: &mut Pixmap, node: &ResolvedNode, t: Transform, r: u8, g: u8, b: u8, a: u8) {
     if a == 0 {
         return;
@@ -280,6 +384,16 @@ fn fill_rect(pixmap: &mut Pixmap, node: &ResolvedNode, t: Transform, r: u8, g: u
     } else {
         pixmap.fill_rect(rect, &paint, t, None);
     }
+}
+
+fn fill_shape(pixmap: &mut Pixmap, path: &tiny_skia::Path, t: Transform, r: u8, g: u8, b: u8, a: u8) {
+    if a == 0 {
+        return;
+    }
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(r, g, b, a);
+    paint.anti_alias = true;
+    pixmap.fill_path(path, &paint, tiny_skia::FillRule::Winding, t, None);
 }
 
 fn rounded_rect_path(rect: Rect, radius: f32) -> tiny_skia::Path {

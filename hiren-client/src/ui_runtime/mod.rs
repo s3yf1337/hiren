@@ -99,7 +99,7 @@ impl UiRuntime {
         let elapsed = self.elapsed();
         let theme = &self.theme;
         let text = self.renderer.borrow().text.clone();
-        let measurer = move |t: &str, size: f32| text.measure_default_weight(t, size);
+        let measurer = move |t: &str, size: f32, family: &str| text.measure(t, size, cosmic_text::Weight::NORMAL, family);
         let mut out = layout::resolve(
             theme,
             &snap,

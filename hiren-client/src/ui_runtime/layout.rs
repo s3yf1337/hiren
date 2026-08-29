@@ -51,15 +51,16 @@ fn theme_uses_time(theme: &Theme) -> bool {
     }
     fn node_uses_time(n: &NodeDef) -> bool {
         let prop_hit = n.props.values().any(|v| expr_uses_time(v));
+        let points_hit = n.points.as_deref().map(expr_uses_time).unwrap_or(false);
         let child_hit = n.children.iter().any(node_uses_time);
         let anim_hit = n.animate.iter().any(|a| {
             matches!(&a.delay, Some(super::theme::DelaySpec::Expr(e)) if expr_uses_time(e))
                 || matches!(&a.from, Some(super::theme::FromSpec::Expr(e)) if expr_uses_time(e))
         });
-        [&n.x, &n.y, &n.width, &n.height, &n.visible, &n.opacity, &n.rotation, &n.scale]
+        [&n.x, &n.y, &n.width, &n.height, &n.visible, &n.opacity, &n.rotation, &n.skew, &n.scale]
             .iter()
             .any(|f| f.as_deref().map(expr_uses_time).unwrap_or(false))
-            || prop_hit || child_hit || anim_hit
+            || prop_hit || points_hit || child_hit || anim_hit
     }
     theme.nodes.iter().any(node_uses_time)
         || theme.components.values().flat_map(|c| &c.nodes).any(node_uses_time)
@@ -100,7 +101,9 @@ fn resolve_node(
     let h = eval_f32(def.height.as_deref().unwrap_or("40"), ctx, 40.0);
     let opacity = eval_f32(def.opacity.as_deref().unwrap_or("1"), ctx, 1.0).clamp(0.0, 1.0);
     let rotation = def.rotation.as_deref().map(|e| eval_f32(e, ctx, 0.0)).unwrap_or(0.0);
+    let skew = def.skew.as_deref().map(|e| eval_f32(e, ctx, 0.0)).unwrap_or(0.0);
     let scale = def.scale.as_deref().map(|e| eval_f32(e, ctx, 1.0)).unwrap_or(1.0);
+    let points = def.points.as_deref().map(|e| parse_points(e, ctx)).unwrap_or_default();
 
     let mut props = HashMap::new();
     for (k, v) in &def.props {
@@ -133,7 +136,9 @@ fn resolve_node(
         background,
         radius,
         rotation,
+        skew,
         scale,
+        points,
         animate: bake_anims(&def.animate, ctx),
         action,
         index: None,
@@ -170,6 +175,28 @@ fn with_suffix(id: &str, suffix: Option<&str>) -> String {
         Some(s) => format!("{id}{s}"),
         None => id.to_string(),
     }
+}
+
+/// Parse a polygon `points` string: `;`-separated `x,y` pairs, each coordinate
+/// a binding expression (in node-local coordinates).
+/// Example: `points = "0,0; window.width,8; window.width,52; 0,60"`.
+fn parse_points(raw: &str, ctx: &mut EvalContext) -> Vec<(f32, f32)> {
+    raw.split(';')
+        .filter_map(|pair| {
+            let pair = pair.trim();
+            if pair.is_empty() {
+                return None;
+            }
+            let (xs, ys) = pair.split_once(',')?;
+            let x = eval_f32(xs.trim(), ctx, f32::NAN);
+            let y = eval_f32(ys.trim(), ctx, f32::NAN);
+            if x.is_finite() && y.is_finite() {
+                Some((x, y))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Bake per-instance animation values: resolve `delay` expressions into
@@ -260,8 +287,11 @@ fn resolve_repeater(
         .unwrap_or((ctx.window_size.0 as f32 - origin_x).max(0.0));
     // The scissor band is FIXED in window space (that's the whole point —
     // content slides under it), so scrolling themes pin it via `clip_y`
-    // instead of inheriting the repeater's animated y.
+    // instead of inheriting the repeater's animated y. `clip_pad` widens the
+    // band horizontally so delegate chrome (tag chips, plate stacks) may
+    // stick out of the repeater box without being scissored away.
     let clip_y = def.props.get("clip_y").map(|e| eval_f32(e, ctx, origin_y)).unwrap_or(origin_y);
+    let clip_pad = def.props.get("clip_pad").map(|e| eval_f32(e, ctx, 0.0)).unwrap_or(0.0);
 
     // Virtualization: instances entirely outside the viewport band are never
     // built (see the pre-cull below). A pure runtime optimization — item
@@ -330,7 +360,7 @@ fn resolve_repeater(
         // list slides under the rest of the UI instead of over it. Rings place
         // items around the center — no clip there.
         let clip = match layout {
-            "vertical" => Some((origin_x, clip_y - 0.5, view_w, view_h + 1.0)),
+            "vertical" => Some((origin_x - clip_pad, clip_y - 0.5, view_w + clip_pad * 2.0, view_h + 1.0)),
             "row" => Some((origin_x, clip_y - 0.5, view_w, item_h + 1.0)),
             _ => None,
         };
@@ -367,7 +397,9 @@ fn resolve_delegate_node_with_component(
     let h = eval_f32(def.height.as_deref().unwrap_or("40"), ctx, 40.0);
     let opacity = eval_f32(def.opacity.as_deref().unwrap_or("1"), ctx, 1.0).clamp(0.0, 1.0);
     let rotation = def.rotation.as_deref().map(|e| eval_f32(e, ctx, 0.0)).unwrap_or(0.0);
+    let skew = def.skew.as_deref().map(|e| eval_f32(e, ctx, 0.0)).unwrap_or(0.0);
     let scale = def.scale.as_deref().map(|e| eval_f32(e, ctx, 1.0)).unwrap_or(1.0);
+    let points = def.points.as_deref().map(|e| parse_points(e, ctx)).unwrap_or_default();
 
     let mut props = HashMap::new();
     for (k, v) in &def.props {
@@ -399,7 +431,9 @@ fn resolve_delegate_node_with_component(
         background,
         radius,
         rotation,
+        skew,
         scale,
+        points,
         animate: baked,
         action,
         index: Some(index),
@@ -694,5 +728,31 @@ mod tests {
         );
         let out = resolve(&t, &state(0, 0), (400, 300), 0.0, None, None);
         assert!(out.uses_time);
+    }
+}
+
+#[cfg(test)]
+mod font_tests {
+    use super::*;
+
+    #[test]
+    fn atlus_font_family_resolves() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("themes/atlus/theme.toml");
+        let t = Theme::load_from_file(&path).expect("load atlus");
+        let mut s = LauncherState::new();
+        let entries: Vec<hiren_shared::AppEntry> = (0..5)
+            .map(|i| hiren_shared::AppEntry::run(format!("id{i}"), format!("App{i}"), format!("app{i}")))
+            .collect();
+        s.set_results(entries);
+        let out = resolve(&t, &s, (860, 560), 0.0, None, None);
+        let wm = out.nodes.iter().find(|n| n.id == "wm_h").expect("wm_h");
+        assert_eq!(wm.props.get("font_family").map(|s| s.as_str()), Some("Antonio"));
+        let bar_sel = out.nodes.iter().find(|n| n.id == "row_bar-0").expect("row0");
+        assert_eq!(bar_sel.props.get("background").map(|s| s.as_str()), Some("#E60012"), "row 0 is selected");
+        let bar = out.nodes.iter().find(|n| n.id == "row_bar-1").expect("row1");
+        assert_eq!(bar.props.get("background").map(|s| s.as_str()), Some("#FFFFFF"));
+        assert_eq!(bar.skew, -18.0);
+        let star = out.nodes.iter().find(|n| n.id == "mass_star").expect("star");
+        assert_eq!(star.points.len(), 8, "polygon points parsed");
     }
 }
