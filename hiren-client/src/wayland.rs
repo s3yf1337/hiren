@@ -576,6 +576,13 @@ impl Xkb {
                 self.state = std::ptr::null_mut();
                 return;
             }
+            log::debug!(
+                "xkb: keymap loaded ({} bytes), min_keycode={} max_keycode={}, num_layouts={}",
+                data.len(),
+                (xh.xkb_keymap_min_keycode)(self.keymap),
+                (xh.xkb_keymap_max_keycode)(self.keymap),
+                (xh.xkb_keymap_num_layouts)(self.keymap),
+            );
             if !self.state.is_null() {
                 (xh.xkb_state_unref)(self.state);
             }
@@ -779,28 +786,47 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for AppState {
     ) {
         match event {
             wl_keyboard::Event::Keymap { format: WEnum::Value(format), fd, size } => {
+                log::debug!("keyboard: keymap event, format={format:?} size={size}");
                 // The fd is delivered as an owned handle; read the keymap text
                 // and drop it (closing the fd).
                 let mut file = std::fs::File::from(fd);
                 if format == wl_keyboard::KeymapFormat::XkbV1 && size > 0 {
-                    let mut buf = vec![0u8; size as usize];
-                    if file.read_exact(&mut buf).is_ok() {
-                        state.xkb.load_keymap(&buf);
+                    // The received fd shares its file offset with the
+                    // compositor's end, which sits *after* the written keymap
+                    // — a raw read would see EOF (0 bytes). Rewind to 0 first,
+                    // then read to EOF: the advertised `size` may not match
+                    // the fd's readable content exactly.
+                    let mut buf = Vec::with_capacity(size as usize);
+                    match file
+                        .seek(SeekFrom::Start(0))
+                        .and_then(|_| file.read_to_end(&mut buf))
+                    {
+                        Ok(_) => {
+                            log::debug!("keyboard: keymap read {} bytes (advertised {size})", buf.len());
+                            state.xkb.load_keymap(&buf);
+                        }
+                        Err(e) => log::warn!("hiren: failed to read keymap fd (size={size}): {e}"),
                     }
                 }
             }
             wl_keyboard::Event::Modifiers { mods_depressed, mods_latched, mods_locked, group, .. } => {
+                log::debug!("keyboard: modifiers dep={mods_depressed} lat={mods_latched} lock={mods_locked} group={group}");
                 state.xkb.update_mask(mods_depressed, mods_latched, mods_locked, group);
             }
             wl_keyboard::Event::Key { key, state: WEnum::Value(kstate), .. } => {
+                log::debug!("keyboard: key event code={key} state={kstate:?}");
                 if kstate == wl_keyboard::KeyState::Pressed {
-                    if let Some(key) = state.xkb.interpret(key) {
-                        let mods = state.xkb.mods();
-                        let outcome = state.core.handle_key(key, mods);
-                        state.dirty = true;
-                        if outcome == Outcome::Exit {
-                            state.done = true;
+                    match state.xkb.interpret(key) {
+                        Some(key) => {
+                            log::debug!("keyboard: interpreted as {key:?}");
+                            let mods = state.xkb.mods();
+                            let outcome = state.core.handle_key(key, mods);
+                            state.dirty = true;
+                            if outcome == Outcome::Exit {
+                                state.done = true;
+                            }
                         }
+                        None => log::debug!("keyboard: key code={key} produced NO keysym"),
                     }
                 }
             }
