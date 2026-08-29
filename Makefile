@@ -26,7 +26,10 @@ build:
 install: build
 	install -Dm755 target/release/hiren-daemon $(DESTDIR)$(BINDIR)/hiren-daemon
 	install -Dm755 target/release/hiren-client $(DESTDIR)$(BINDIR)/hiren-client
-	install -Dm644 hiren-daemon.service $(DESTDIR)$(SYSDIR)/hiren-daemon.service
+	# ExecStart is templated: the service must point at the PREFIX it was
+	# installed with, not a hardcoded /usr/local (breaks user-local installs).
+	@mkdir -p $(DESTDIR)$(SYSDIR)
+	@sed "s|@BINDIR@|$(DESTDIR)$(BINDIR)|g" hiren-daemon.service > $(DESTDIR)$(SYSDIR)/hiren-daemon.service
 	@mkdir -p $(DESTDIR)$(SHAREDIR)
 	@for t in hiren-client/themes/*; do \
 		if [ -d "$$t" ]; then \

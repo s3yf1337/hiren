@@ -4,7 +4,7 @@ Documentation=https://github.com/s3yf1337/hiren
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/hiren-daemon
+ExecStart=@BINDIR@/hiren-daemon
 Restart=on-failure
 RestartSec=2
 
