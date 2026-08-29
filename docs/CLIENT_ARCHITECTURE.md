@@ -207,7 +207,11 @@ A property value is either a **literal** (`x = 32`, `text = "Firefox"`) or an
   `shadow` (hard offset for polygons), transforms and `on_click` (point-in-polygon).
 - Text styling: `font_family = "Antonio"` (system font via fontdb; falls back to
   sans when missing), `outline = "3px #000000"` (comic outline, ring blits),
-  `text_shadow = "3px 3px #000000"` (hard sticker offset under the outline).
+  `text_shadow = "3px 3px #000000"` (hard sticker offset under the outline),
+  `text_case = "upper"` (case-fold at layout time — P5 sets menus in caps).
+- String helpers in expressions: `upper(x)` / `lower(x)` alongside `initial(x)`;
+  repeater locals include `item_mode` (`drun`/`run`/`calc`/`window`) for
+  mode-tag columns.
 - Repeater prop `clip_pad = "80"` — widens the fixed scissor band horizontally so
   delegate chrome (tag chips hanging off rows, plate stacks) is not clipped.
 - `initial(text)` — first grapheme (icon chips)

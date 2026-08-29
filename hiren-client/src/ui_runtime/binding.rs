@@ -172,6 +172,17 @@ fn eval_inner(expr: &str, ctx: &mut EvalContext) -> String {
         }
     }
 
+    // upper(expr) / lower(expr) — case-fold a string value (P5-style caps UI;
+    // lets caret measurement match uppercased display text)
+    for (fun, fold) in [("upper(", 0u8), ("lower(", 1)] {
+        if expr.starts_with(fun) && expr.ends_with(')') {
+            if let Some(args) = split_top_args(&expr[fun.len()..expr.len() - 1]) {
+                let text = eval_inner(args[0].trim(), ctx);
+                return if fold == 0 { text.to_uppercase() } else { text.to_lowercase() };
+            }
+        }
+    }
+
     // initial(expr) — first character (icon-chip fallback; results carry no icons)
     if expr.starts_with("initial(") && expr.ends_with(')') {
         if let Some(args) = split_top_args(&expr["initial(".len()..expr.len() - 1]) {

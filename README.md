@@ -144,7 +144,7 @@ animate = [{ property = "y", duration_ms = 220, easing = "ease_out_cubic" }]
 ```
 
 - `hiren-client/themes/default/theme.toml` — clean vertical launcher (uses runtime like all others)
-- `hiren-client/themes/atlus/theme.toml` — Persona 5 Save/Load geometry: skewed parallelogram rows with No-tags, plate-stack selection (cyan/violet + red slab), film perforation, ransom-note Antonio type with black outlines, torn red header mass
+- `hiren-client/themes/atlus/theme.toml` — Persona 5 collage: transparent window with a torn splash silhouette (desktop shows through the gaps), diagonal cascade list with mode tabs (APP/CMD/CALC), plate-stack selection, marching film perforation, white torn OK-band footer, ransom-note Antonio caps
 - `hiren-client/themes/macos/theme.toml` — calm floating card, spring motion
 - `hiren-client/themes/layered/theme.toml` — layered panels, decorative orbs reacting to selection
 - `hiren-client/themes/circular/theme.toml` — radial, search centered, results in circle

@@ -109,6 +109,9 @@ fn resolve_node(
     for (k, v) in &def.props {
         props.insert(k.clone(), eval_str(v, ctx));
     }
+    if let Some(tc) = &def.text_case {
+        props.entry("text_case".to_string()).or_insert_with(|| tc.clone());
+    }
 
     let background = props
         .get("background")
@@ -120,7 +123,7 @@ fn resolve_node(
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(0.0);
 
-    let text = def.text.as_ref().map(|e| eval_str(e, ctx));
+    let text = def.text.as_ref().map(|e| apply_text_case(&eval_str(e, ctx), &props));
     let action = def.on_click.as_deref().and_then(|a| parse_action(a, ctx));
 
     let node = ResolvedNode {
@@ -167,6 +170,16 @@ fn resolve_node(
                 _ => {}
             }
         }
+    }
+}
+
+/// `text_case = "upper" | "lower"` — case-fold the resolved text at layout
+/// time (P5 sets its menus in caps; Antonio only shines uppercase).
+fn apply_text_case(text: &str, props: &HashMap<String, String>) -> String {
+    match props.get("text_case").map(|s| s.as_str()) {
+        Some("upper") => text.to_uppercase(),
+        Some("lower") => text.to_lowercase(),
+        _ => text.to_string(),
     }
 }
 
@@ -340,6 +353,7 @@ fn resolve_repeater(
             locals.insert("item_id".into(), it.id.clone());
             locals.insert("item_description".into(), it.description.clone().unwrap_or_default());
             locals.insert("item_keywords".into(), it.keywords.clone());
+            locals.insert("item_mode".into(), format!("{:?}", it.mode).to_lowercase());
         }
         let mut item_ctx = ctx.clone();
         item_ctx.locals = locals;
@@ -405,13 +419,16 @@ fn resolve_delegate_node_with_component(
     for (k, v) in &def.props {
         props.insert(k.clone(), eval_str(v, ctx));
     }
+    if let Some(tc) = &def.text_case {
+        props.entry("text_case".to_string()).or_insert_with(|| tc.clone());
+    }
     let background = props
         .get("background")
         .or_else(|| props.get("fill"))
         .and_then(|c| super::render::solid_color(c));
     let color = props.get("color").and_then(|c| super::render::solid_color(c));
     let radius = props.get("radius").and_then(|s| s.trim().parse::<f32>().ok()).unwrap_or(0.0);
-    let text = def.text.as_ref().map(|e| eval_str(e, ctx));
+    let text = def.text.as_ref().map(|e| apply_text_case(&eval_str(e, ctx), &props));
     let action = def.on_click.as_deref().and_then(|a| parse_action(a, ctx));
 
     let mut merged: Vec<AnimateDef> = def.animate.iter().chain(comp_anims.iter()).cloned().collect();
@@ -749,10 +766,15 @@ mod font_tests {
         assert_eq!(wm.props.get("font_family").map(|s| s.as_str()), Some("Antonio"));
         let bar_sel = out.nodes.iter().find(|n| n.id == "row_bar-0").expect("row0");
         assert_eq!(bar_sel.props.get("background").map(|s| s.as_str()), Some("#E60012"), "row 0 is selected");
+        assert_eq!(bar_sel.scale, 1.05, "selection pop target");
         let bar = out.nodes.iter().find(|n| n.id == "row_bar-1").expect("row1");
         assert_eq!(bar.props.get("background").map(|s| s.as_str()), Some("#FFFFFF"));
-        assert_eq!(bar.skew, -18.0);
+        assert_eq!(bar.skew, -16.0);
         let star = out.nodes.iter().find(|n| n.id == "mass_star").expect("star");
         assert_eq!(star.points.len(), 8, "polygon points parsed");
+        let tab = out.nodes.iter().find(|n| n.id == "mode_tab_text-2").expect("tab2");
+        assert_eq!(tab.text.as_deref(), Some("CMD"), "run mode maps to CMD tab");
+        let name = out.nodes.iter().find(|n| n.id == "row_name-1").expect("name1");
+        assert_eq!(name.text.as_deref(), Some("APP1"), "text_case upper applied");
     }
 }

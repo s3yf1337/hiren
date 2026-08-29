@@ -103,6 +103,8 @@ pub struct NodeDef {
     // text specifics via props as well, but allow top-level for convenience
     #[serde(default)] pub text: Option<String>,
     #[serde(default)] pub placeholder: Option<String>,
+    /// Case-fold resolved text: "upper" | "lower" (P5 sets menus in caps).
+    #[serde(default)] pub text_case: Option<String>,
 
     // transform (bindings, applied around the node center)
     #[serde(default)] pub rotation: Option<String>, // degrees
@@ -244,6 +246,7 @@ impl Theme {
                     delegate: None,
                     text: Some("launcher.query".into()),
                     placeholder: None,
+                    text_case: None,
                     rotation: None,
                     skew: None,
                     scale: None,
