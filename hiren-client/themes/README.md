@@ -3,7 +3,7 @@
 Each directory is a self-contained UI theme — a TOML scene graph rendered by the same `hiren-client` runtime.
 
 - `default` — clean vertical launcher (practical default, proves runtime replaces old GTK UI)
-- `atlus` — game-like, bold, skewed, independent selector with spring, preview panel
+- `atlus` — Metaphor-inspired archive menu: cream manuscript + navy void, independent crimson selector, compositional selection, OFL display fonts in `atlus/fonts/`
 - `macos` — calm floating card, blur hint, spring selector
 - `layered` — two panels + depth orbs reacting to selection
 - `circular` — radial, search centered, results in circle via `layout="circular"` + `cos/sin` bindings

@@ -9,6 +9,7 @@ hiren-shared = { path = "../hiren-shared" }
 winit = { version = "0.30", features = ["wayland", "x11"] }
 softbuffer = "0.4"
 tiny-skia = "0.11"
+resvg = "0.44"
 cosmic-text = { version = "0.14", features = [] }
 fontdb = "0.21"
 serde = { version = "1", features = ["derive"] }

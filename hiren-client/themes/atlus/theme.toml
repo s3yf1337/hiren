@@ -1,845 +1,817 @@
-# ATLAS — Persona 5 UI, full collage
-# ---------------------------------------------------------------
-# The window is transparent; the UI is a TORN SPLASH, not a rectangle:
-#   * the black ground is a jagged polygon bleeding off three edges, torn
-#     V-notches open to the desktop at the top-right and bottom-left
-#   * a white torn band crosses the bottom (the settings "OK" band), the
-#     footer lives on it in black type with oscillating dashes
-#   * the red mass bursts off the top-left; a detached shard + star plate
-#     float in the top-right notch
-# List = the settings screen: skewed white bars in a DIAGONAL CASCADE
-# (each row steps left as it goes down; scrolling glides diagonally),
-# ragged right edge from APP/CMD/CALC mode tabs jutted at varying depths,
-# black No-tags hanging off the left, red Antonio numerals, serif body.
-# Selected = red slab on the cyan/violet plate stack (title-menu stack),
-# film perforation, white star, on/off-style white mode tab.
-# Motion everywhere: bars wobble independently, the film perforation
-# MARCHES, dashes slide, red breathes, stars spin, bg slashes drift,
-# springs overshoot (damping 20-26). Time lives only on non-animated
-# props; springs chase state-driven targets and settle.
-# Scroll geometry: rows 44px + 14 gap (stride 58), viewport clips at
-# y=190, cascade divides the same scroll offset as the list.
+# Hiren — ATLAS
+# Editorial game menu. Primary: Metaphor: ReFantazio. Motion: Persona 5.
+# Cream overlaps navy in the middle (no gutter). Outer corners are cut; dossier stays in frame.
+# Not a GTK list. Not black+red+white+diagonals. Not a centered card.
 
 [meta]
 name = "atlus"
-description = "Persona 5 collage — torn splash silhouette, cascade list with mode tabs, plate-stack selection, marching film, ransom-note Antonio"
+description = "Metaphor-inspired archive menu — cream manuscript, navy void, independent selector, compositional selection"
 author = "hiren"
 
 [window]
-width = 900
-height = 600
+width = 1080
+height = 640
 transparent = true
+time_hz = 60
 
-# ---------------------------------------------------------------------
-# The splash — jagged black ground with torn transparent gaps
-# ---------------------------------------------------------------------
+# =====================================================================
+# Layer 0 — navy field (right). Overlaps cream. Recedes from the window TR/BR.
+# =====================================================================
 [[nodes]]
-id = "splash"
+id = "navy_field"
 type = "Polygon"
+x = "0 + shake(4, 2) + launcher.launching * 90"
+y = "0 + min(launcher.selected_index, 10) * 1.5"
+width = "window.width"
+height = "window.height"
+points = "410, 12; 968, 36; 1048, 110; 1056, 490; 992, 568; 430, 596; 396, 96"
+props = { background = "#0E1728" }
+z = 0
+opacity = "launcher.launching ? 0 : 1"
+animate = [
+  { property = "x", from = "window.width * 0.22", duration_ms = 520, easing = "ease_out_expo" },
+  { property = "opacity", from = 0, duration_ms = 280, easing = "ease_out_quad" },
+  { property = "y", duration_ms = 640, easing = "spring", spring = { stiffness = 140, damping = 22, mass = 1 } },
+]
+
+[[nodes]]
+id = "hatches"
+type = "Repeater"
 x = "0"
 y = "0"
-width = "900"
-height = "600"
-points = "-80,-80; 280,-80; 302,-28; 344,-58; 560,-40; 588,28; 640,-12; 692,48; 732,6; 782,56; 832,14; 882,62; 980,30; 980,240; 902,268; 952,320; 892,362; 962,420; 980,470; 980,680; 620,680; 560,598; 500,638; 430,588; 360,628; 300,582; 240,612; 170,572; 120,608; 60,568; 10,598; -80,568; -80,380; 30,340; -20,300; 40,262; -10,222; -80,190"
-props = { background = "#000000" }
+delegate = "hatch"
+z = 1
+props = { count = "8", layout = "free" }
 
-# Ghost slashes drifting across the black
+# =====================================================================
+# Layer 1 — cream manuscript (left). Overlaps navy. Tab + bottom-left bite.
+# =====================================================================
 [[nodes]]
-id = "bg_slash_a"
-type = "Rectangle"
-x = "-300 + sin(time * 0.12) * 80"
-y = "360"
-width = "1600"
-height = "90"
-rotation = "-12"
-skew = "-6"
-opacity = "0.035"
-props = { background = "#FFFFFF" }
-
-[[nodes]]
-id = "bg_slash_b"
-type = "Rectangle"
-x = "-300 + sin(time * 0.09 + 2.6) * 90"
-y = "150"
-width = "1500"
-height = "50"
-rotation = "-12"
-skew = "-6"
-opacity = "0.03"
-props = { background = "#FFFFFF" }
-
-# ---------------------------------------------------------------------
-# Red mass — bursts off the top-left, breathing
-# ---------------------------------------------------------------------
-[[nodes]]
-id = "red_deep"
-type = "Rectangle"
-x = "-210 + sin(time * 0.28 + 2.0) * 16"
-y = "-160 + cos(time * 0.33 + 0.8) * 9"
-width = "1290"
-height = "250"
-rotation = "-8.4 + sin(time * 0.39 + 1.9) * 1.0"
-skew = "-9"
-props = { background = "#A4000E" }
-animate = [{ property = "opacity", from = 0, duration_ms = 240, delay = 40, easing = "ease_out_quad" }]
-
-[[nodes]]
-id = "red_mass"
-type = "Rectangle"
-x = "-170"
-y = "-196 + cos(time * 0.43) * 8"
-width = "1330"
-height = "290"
-rotation = "-7 + sin(time * 0.5) * 1.2"
-skew = "-8"
-props = { background = "#E60012" }
-animate = [{ property = "opacity", from = 0, duration_ms = 200, easing = "ease_out_quad" }]
-
-# Torn bites into the mass's lower edge
-[[nodes]]
-id = "tear_a"
+id = "cream_shadow"
 type = "Polygon"
-x = "520"
-y = "66 + cos(time * 0.43) * 8"
-width = "130"
-height = "64"
-rotation = "-7 + sin(time * 0.5) * 1.2"
-points = "0,0; 130,12; 80,24; 116,38; 42,46; 68,64; 0,44"
-props = { background = "#000000" }
-animate = [{ property = "opacity", from = 0, duration_ms = 180, delay = 240, easing = "ease_out_quad" }]
+x = "-12 + shake(5, 1) - launcher.launching * 160"
+y = "14"
+width = "window.width"
+height = "window.height"
+points = "26, 12; 292, 2; 318, 56; 628, 32; 652, 568; 96, 608; 20, 68"
+props = { background = "#C9B48A" }
+z = 2
+opacity = "launcher.launching ? 0 : 1"
+animate = [
+  { property = "x", from = -260, duration_ms = 480, delay = 30, easing = "ease_out_expo" },
+]
 
 [[nodes]]
-id = "tear_b"
+id = "cream_page"
 type = "Polygon"
-x = "700"
-y = "46 + cos(time * 0.43) * 8"
-width = "100"
-height = "48"
-rotation = "-7 + sin(time * 0.5) * 1.2"
-points = "0,8; 100,0; 72,18; 92,30; 26,42; 48,50; 0,34"
-props = { background = "#000000" }
-animate = [{ property = "opacity", from = 0, duration_ms = 180, delay = 280, easing = "ease_out_quad" }]
+x = "0 + shake(5, 1) - launcher.launching * 180"
+y = "0 + shake(2, 8)"
+width = "window.width"
+height = "window.height"
+points = "26, 12; 292, 2; 318, 56; 628, 32; 652, 568; 96, 608; 20, 68"
+props = { background = "#F4E4C1" }
+z = 3
+opacity = "launcher.launching ? 0 : 1"
+animate = [
+  { property = "x", from = -240, duration_ms = 500, delay = 40, easing = "ease_out_expo" },
+  { property = "opacity", from = 0, duration_ms = 260, delay = 40, easing = "ease_out_quad" },
+]
 
-# Detached red shard — floats in the top-right notch
 [[nodes]]
-id = "red_shard"
+id = "seam_gold"
 type = "Rectangle"
-x = "770 + sin(time * 0.5 + 1.1) * 10"
-y = "-14"
-width = "170"
-height = "56"
-rotation = "-13 + sin(time * 0.62) * 1.6"
-skew = "-10"
-props = { background = "#E60012" }
-animate = [{ property = "opacity", from = 0, duration_ms = 220, delay = 200, easing = "ease_out_quad" }]
-
-# Marching film perforation — sprockets crawl down the mass
-[[nodes]]
-id = "perf"
-type = "Repeater"
-x = "16"
-y = "6"
-width = "34"
-height = "166"
-props = { count = "7", gap = "0", item_height = "0", layout = "vertical", clip_y = "6" }
-delegate = "perf_hole"
-
-# Star sparkle roaming the red
-[[nodes]]
-id = "mass_star"
-type = "Polygon"
-x = "400 + sin(time * 0.7) * 30"
-y = "84 + cos(time * 0.55 + 1.2) * 10"
-width = "18"
-height = "18"
-rotation = "time * 50"
-opacity = "0.55 + 0.3 * sin(time * 2.2)"
-points = "9,0; 11.2,6.8; 18,9; 11.2,11.2; 9,18; 6.8,11.2; 0,9; 6.8,6.8"
-props = { background = "#FFFFFF" }
-
-# ---------------------------------------------------------------------
-# Wordmark — ransom-note caps, outlined, shadowed
-# ---------------------------------------------------------------------
-[[nodes]]
-id = "wm_h"
-type = "Text"
-x = "36"
-y = "8"
-width = "36"
-height = "50"
-text = "H"
-rotation = "-5 + sin(time * 1.1) * 2.0"
-props = { color = "#FFFFFF", font_size = "38", font_weight = "700", font_family = "Antonio", align = "center", outline = "3px #000000", text_shadow = "3px 3px #000000" }
-animate = [{ property = "opacity", from = 0, duration_ms = 150, delay = 100, easing = "ease_out_quad" }]
+x = "window.width * 0.545 + shake(6, 3) - 8 - launcher.launching * 40"
+y = "48"
+width = "3"
+height = "500"
+rotation = "-8.5"
+props = { background = "#C5A35A" }
+z = 4
+opacity = "launcher.launching ? 0 : 0.85"
+animate = [
+  { property = "y", from = -200, duration_ms = 560, delay = 90, easing = "ease_out_expo" },
+  { property = "x", duration_ms = 520, easing = "spring", spring = { stiffness = 160, damping = 20, mass = 1 } },
+]
 
 [[nodes]]
-id = "wm_i"
-type = "Text"
-x = "74"
-y = "12"
-width = "20"
-height = "50"
-text = "I"
-rotation = "4 + sin(time * 1.3 + 0.8) * 2.2"
-props = { color = "#000000", font_size = "40", font_weight = "700", font_family = "Antonio", align = "center", outline = "3px #FFFFFF" }
-animate = [{ property = "opacity", from = 0, duration_ms = 150, delay = 140, easing = "ease_out_quad" }]
+id = "seam_crimson"
+type = "Rectangle"
+x = "window.width * 0.545 + shake(6, 3) + 4 - launcher.launching * 40"
+y = "72"
+width = "1"
+height = "460"
+rotation = "-8.5"
+props = { background = "#C41E3A" }
+z = 4
+opacity = "launcher.launching ? 0 : 0.55"
+animate = [
+  { property = "height", from = 0, duration_ms = 520, delay = 160, easing = "ease_out_quart" },
+]
 
 [[nodes]]
-id = "wm_r"
-type = "Text"
+id = "crop_tl_h"
+type = "Rectangle"
+x = "34"
+y = "18"
+width = "28"
+height = "2"
+props = { background = "#1A1208" }
+z = 8
+opacity = "launcher.launching ? 0 : 0.55"
+animate = [{ property = "opacity", from = 0, duration_ms = 240, delay = 200, easing = "ease_out_quad" }]
+
+[[nodes]]
+id = "crop_tl_v"
+type = "Rectangle"
+x = "34"
+y = "18"
+width = "2"
+height = "28"
+props = { background = "#1A1208" }
+z = 8
+opacity = "launcher.launching ? 0 : 0.55"
+
+[[nodes]]
+id = "crop_br_h"
+type = "Rectangle"
 x = "96"
-y = "6"
-width = "36"
-height = "50"
-text = "R"
-rotation = "-3 + sin(time * 0.9 + 1.6) * 1.8"
-props = { color = "#FFFFFF", font_size = "38", font_weight = "700", font_family = "Antonio", align = "center", outline = "3px #000000", text_shadow = "3px 3px #000000" }
-animate = [{ property = "opacity", from = 0, duration_ms = 150, delay = 180, easing = "ease_out_quad" }]
+y = "584"
+width = "28"
+height = "2"
+props = { background = "#1A1208" }
+z = 8
+opacity = "launcher.launching ? 0 : 0.4"
 
 [[nodes]]
-id = "wm_e"
+id = "crop_br_v"
+type = "Rectangle"
+x = "96"
+y = "558"
+width = "2"
+height = "28"
+props = { background = "#1A1208" }
+z = 8
+opacity = "launcher.launching ? 0 : 0.4"
+
+# =====================================================================
+# Layer 2 — oversized background type (typography as composition)
+# =====================================================================
+[[nodes]]
+id = "bg_archive"
 type = "Text"
-x = "134"
-y = "10"
-width = "34"
-height = "50"
-text = "E"
-rotation = "3 + sin(time * 1.2 + 2.4) * 2.1"
-props = { color = "#FFFFFF", font_size = "37", font_weight = "700", font_family = "Antonio", align = "center", outline = "3px #000000", text_shadow = "3px 3px #000000" }
-animate = [{ property = "opacity", from = 0, duration_ms = 150, delay = 220, easing = "ease_out_quad" }]
+x = "window.width * 0.38 + min(launcher.selected_index, 12) * 6"
+y = "210 + min(launcher.selected_index, 8) * 4"
+width = "720"
+height = "180"
+rotation = "-11"
+text = "ARCHIVE"
+props = { color = "rgba(244,228,193,0.07)", font_size = "148", font_family = "Playfair Display Black", font_weight = "900", align = "left" }
+z = 2
+opacity = "launcher.launching ? 0 : 1"
+animate = [
+  { property = "x", duration_ms = 700, easing = "spring", spring = { stiffness = 90, damping = 18, mass = 1 } },
+  { property = "y", duration_ms = 700, easing = "spring", spring = { stiffness = 90, damping = 18, mass = 1 } },
+  { property = "opacity", from = 0, duration_ms = 500, delay = 80, easing = "ease_out_quad" },
+]
 
 [[nodes]]
-id = "wm_n"
+id = "bg_num"
 type = "Text"
-x = "170"
-y = "7"
-width = "36"
-height = "50"
-text = "N"
-rotation = "-4 + sin(time * 1.0 + 3.1) * 1.9"
-props = { color = "#FFFFFF", font_size = "38", font_weight = "700", font_family = "Antonio", align = "center", outline = "3px #000000", text_shadow = "3px 3px #000000" }
-animate = [{ property = "opacity", from = 0, duration_ms = 150, delay = 260, easing = "ease_out_quad" }]
+x = "window.width - 340 - min(launcher.selected_index, 10) * 8 + shake(10, 6)"
+y = "window.height - 250"
+width = "340"
+height = "200"
+rotation = "-6"
+text = "launcher.selected_index + 1"
+props = { color = "rgba(244,228,193,0.14)", font_size = "168", font_family = "Abril Fatface", align = "right" }
+z = 2
+visible = "launcher.results_count > 0"
+opacity = "launcher.launching ? 0 : 1"
+animate = [
+  { property = "x", duration_ms = 480, easing = "spring", spring = { stiffness = 200, damping = 18, mass = 1 } },
+  { property = "scale", from = 1.18, duration_ms = 280, trigger = "select", easing = "ease_out_back" },
+]
+
+# =====================================================================
+# Layer 3 — title + search (not a text field; display type + underline)
+# =====================================================================
+[[nodes]]
+id = "title"
+type = "Text"
+x = "48 + shake(3, 7)"
+y = "18"
+width = "420"
+height = "56"
+rotation = "-1.8"
+text = "HIREN"
+props = { color = "#1A1208", font_size = "48", font_family = "Playfair Display Black", font_weight = "900", align = "left" }
+z = 12
+opacity = "launcher.launching ? 0 : 1"
+animate = [
+  { property = "y", from = -48, duration_ms = 420, delay = 70, easing = "ease_out_expo" },
+  { property = "opacity", from = 0, duration_ms = 280, delay = 70, easing = "ease_out_quad" },
+]
 
 [[nodes]]
-id = "wm_sub"
+id = "title_kicker"
 type = "Text"
-x = "214"
-y = "20"
+x = "268"
+y = "38"
+width = "260"
+height = "18"
+text = "APPLICATION ARCHIVE"
+props = { color = "#8A7340", font_size = "10", font_family = "Oswald", font_weight = "700", align = "left" }
+z = 12
+opacity = "launcher.launching ? 0 : 1"
+animate = [{ property = "opacity", from = 0, duration_ms = 320, delay = 180, easing = "ease_out_quad" }]
+
+[[nodes]]
+id = "title_rule"
+type = "Rectangle"
+x = "52"
+y = "78"
+width = "188"
+height = "2"
+props = { background = "#C5A35A" }
+z = 12
+opacity = "launcher.launching ? 0 : 1"
+animate = [{ property = "width", from = 0, duration_ms = 420, delay = 140, easing = "ease_out_quart" }]
+
+[[nodes]]
+id = "inquire"
+type = "Text"
+x = "54"
+y = "86"
 width = "200"
-height = "26"
-text = "// LAUNCHER"
-rotation = "-2"
-props = { color = "rgba(255,255,255,0.85)", font_size = "12", font_weight = "700", font_family = "Antonio", align = "left" }
-animate = [{ property = "opacity", from = 0, duration_ms = 180, delay = 300, easing = "ease_out_quad" }]
-
-# ---------------------------------------------------------------------
-# Search — white parallelogram on the red, comic shadow, caps query
-# ---------------------------------------------------------------------
-[[nodes]]
-id = "search_bar"
-type = "Rectangle"
-x = "40"
-y = "104"
-width = "600"
-height = "60"
-skew = "-14"
-props = { background = "#FFFFFF", border = "3px #000000", shadow = "7px 8px 0 #000000" }
-animate = [{ property = "x", from = -100, duration_ms = 320, delay = 60, easing = "ease_out_expo" }, { property = "opacity", from = 0, duration_ms = 200, delay = 60, easing = "ease_out_quad" }]
-
-[[nodes]]
-id = "search_tab"
-type = "Rectangle"
-x = "26"
-y = "94"
-width = "20"
-height = "20"
-rotation = "-12"
-props = { background = "#000000" }
-
-[[nodes]]
-id = "query"
-type = "Text"
-x = "64"
-y = "104"
-width = "490"
-height = "60"
-text = "upper(launcher.query)"
-props = { color = "#000000", font_size = "30", font_weight = "400", font_family = "Antonio", align = "left" }
-
-[[nodes]]
-id = "query_ph"
-type = "Text"
-x = "64"
-y = "104"
-width = "490"
-height = "60"
-text = "TYPE TO SEARCH"
-visible = "launcher.query == ''"
-props = { color = "#B9B9B9", font_size = "24", font_weight = "700", font_family = "Antonio", align = "left" }
-
-[[nodes]]
-id = "caret"
-type = "Rectangle"
-x = "64 + text_width(upper(launcher.query), 30, 'Antonio')"
-y = "116"
-width = "5"
-height = "36"
-opacity = "sin(time * 5.2) > -0.2 ? 1 : 0.15"
-props = { background = "#E60012" }
-
-# Count — black chip, yellow star, white numeral
-[[nodes]]
-id = "count_chip"
-type = "Rectangle"
-x = "664 + sin(time * 0.4) * 3"
-y = "110"
-width = "86"
-height = "48"
-skew = "-14"
-visible = "launcher.results_count > 0"
-props = { background = "#000000", border = "2px #FFFFFF" }
-animate = [{ property = "opacity", from = 0, duration_ms = 160, delay = 220, easing = "ease_out_quad" }]
-
-[[nodes]]
-id = "count_star"
-type = "Polygon"
-x = "676"
-y = "124"
-width = "16"
 height = "16"
-rotation = "time * 60"
-visible = "launcher.results_count > 0"
-points = "8,0; 10.2,5.8; 16,8; 10.2,10.2; 8,16; 5.8,10.2; 0,8; 5.8,5.8"
-props = { background = "#FFD800" }
+text = "INQUIRE"
+props = { color = "launcher.query == '' ? #8A7340 : #C41E3A", font_size = "11", font_family = "Oswald", font_weight = "700", align = "left" }
+z = 12
+opacity = "launcher.launching ? 0 : 1"
+animate = [{ property = "y", from = 70, duration_ms = 380, delay = 150, easing = "ease_out_expo" }]
 
 [[nodes]]
-id = "count_text"
+id = "search_text"
 type = "Text"
-x = "696"
-y = "110"
-width = "48"
-height = "48"
-text = "launcher.results_count"
-visible = "launcher.results_count > 0"
-props = { color = "#FFFFFF", font_size = "26", font_weight = "700", font_family = "Antonio", align = "center" }
-animate = [{ property = "opacity", from = 0, duration_ms = 160, delay = 260, easing = "ease_out_quad" }]
+x = "50 + type_shake(6, 2)"
+y = "102"
+width = "520"
+height = "52"
+text = "launcher.query"
+scale = "launcher.query == '' ? 1 : 1.05"
+props = { color = "#1A1208", font_size = "28", font_family = "Playfair Display Black", font_weight = "900", align = "left", wrap = "none" }
+z = 12
+visible = "launcher.query != ''"
+opacity = "launcher.launching ? 0 : 1"
+animate = [
+  { property = "y", from = 118, duration_ms = 400, delay = 160, easing = "ease_out_expo" },
+  { property = "scale", duration_ms = 380, easing = "spring", spring = { stiffness = 240, damping = 18, mass = 1 } },
+]
 
-# Empty stamp — when the search comes up dry
 [[nodes]]
-id = "empty_stamp"
+id = "search_rule"
 type = "Rectangle"
-x = "60"
-y = "300"
-width = "360"
-height = "62"
-skew = "-12"
-visible = "launcher.results_count == 0"
-props = { background = "#000000", border = "3px #E60012" }
-animate = [{ property = "x", from = -90, duration_ms = 280, delay = 120, easing = "ease_out_expo" }, { property = "opacity", from = 0, duration_ms = 200, delay = 120, easing = "ease_out_quad" }]
+x = "52"
+y = "156"
+width = "launcher.query == '' ? 168 : min(text_width(launcher.query, 28, 'Playfair Display Black') + 36, 500)"
+height = "3"
+props = { background = "#C5A35A" }
+z = 12
+opacity = "launcher.launching ? 0 : 1"
+animate = [
+  { property = "width", from = 0, duration_ms = 480, delay = 200, easing = "spring", spring = { stiffness = 220, damping = 20, mass = 1 } },
+]
 
 [[nodes]]
-id = "empty_stamp_text"
-type = "Text"
-x = "60"
-y = "300"
-width = "360"
-height = "62"
-text = "NO RESULTS"
-visible = "launcher.results_count == 0"
-props = { color = "#FFFFFF", font_size = "30", font_weight = "700", font_family = "Antonio", align = "center", outline = "2px #000000" }
-animate = [{ property = "opacity", from = 0, duration_ms = 200, delay = 200, easing = "ease_out_quad" }]
+id = "search_rule_red"
+type = "Rectangle"
+x = "52"
+y = "161"
+width = "launcher.query == '' ? 48 : min(text_width(launcher.query, 28, 'Playfair Display Black') * 0.35, 180)"
+height = "2"
+props = { background = "#C41E3A" }
+z = 12
+visible = "launcher.query != ''"
+opacity = "launcher.launching ? 0 : 1"
+animate = [{ property = "width", duration_ms = 340, easing = "ease_out_back" }]
 
-# ---------------------------------------------------------------------
-# Results — settings-screen cascade: rows step LEFT as they descend,
-# mode tabs jut raggedly past the right edge, No-tags hang on the left.
-# ---------------------------------------------------------------------
+[[nodes]]
+id = "caret_empty"
+type = "Rectangle"
+x = "52"
+y = "112"
+width = "3"
+height = "32"
+rotation = "-3"
+props = { background = "#C41E3A" }
+z = 13
+visible = "launcher.query == ''"
+opacity = "(1 - launcher.launching) * (0.15 + 0.85 * max(0, sin(time * 5)))"
+
+[[nodes]]
+id = "caret_typed"
+type = "Rectangle"
+x = "52 + text_width(launcher.query, 28, 'Playfair Display Black') + 4 + type_shake(4, 8)"
+y = "110"
+width = "3"
+height = "36"
+rotation = "-3"
+props = { background = "#C41E3A" }
+z = 13
+visible = "launcher.query != ''"
+opacity = "(1 - launcher.launching) * (0.15 + 0.85 * max(0, sin(time * 5)))"
+
+# =====================================================================
+# Layer 4 — selector (independent graphic object, not a row :selected)
+# =====================================================================
+[[nodes]]
+id = "selector_shadow"
+type = "Polygon"
+x = "18 + shake(8, 4) + launcher.launching * 40"
+y = "214 + (launcher.selected_index - clamp(launcher.selected_index - 4, 0, launcher.results_count)) * 64 + 6"
+width = "580"
+height = "88"
+skew = "-14"
+rotation = "-2.2"
+points = "18, 12; 580, 0; 562, 88; 0, 80"
+props = { background = "#1A1208" }
+z = 5
+visible = "launcher.results_count > 0"
+opacity = "launcher.launching ? 0 : 0.55"
+animate = [
+  { property = "y", duration_ms = 520, easing = "spring", spring = { stiffness = 210, damping = 16, mass = 1 } },
+  { property = "x", duration_ms = 480, easing = "spring", spring = { stiffness = 180, damping = 18, mass = 1 } },
+]
+
+[[nodes]]
+id = "selector"
+type = "Polygon"
+x = "10 + shake(10, 5) + launcher.launching * 80"
+y = "206 + (launcher.selected_index - clamp(launcher.selected_index - 4, 0, launcher.results_count)) * 64"
+width = "570"
+height = "84"
+skew = "-14"
+rotation = "-3 + shake(2.2, 3)"
+scale = "launcher.launching ? 1.55 : (1 + hit * 0.08)"
+points = "22, 10; 570, 0; 548, 84; 0, 76"
+props = { background = "#C41E3A" }
+z = 6
+visible = "launcher.results_count > 0"
+opacity = "launcher.launching ? 0 : 1"
+animate = [
+  { property = "y", duration_ms = 500, easing = "spring", spring = { stiffness = 230, damping = 15, mass = 1 } },
+  { property = "x", duration_ms = 460, easing = "spring", spring = { stiffness = 190, damping = 17, mass = 1 } },
+  { property = "rotation", duration_ms = 420, easing = "spring", spring = { stiffness = 260, damping = 14, mass = 1 } },
+  { property = "scale", from = 0.72, duration_ms = 420, delay = 280, easing = "spring", spring = { stiffness = 200, damping = 16, mass = 1 } },
+  { property = "opacity", from = 0, duration_ms = 240, delay = 280, easing = "ease_out_quad" },
+]
+
+[[nodes]]
+id = "selector_cream"
+type = "Polygon"
+x = "86 + shake(6, 9)"
+y = "214 + (launcher.selected_index - clamp(launcher.selected_index - 4, 0, launcher.results_count)) * 64"
+width = "470"
+height = "68"
+skew = "-12"
+rotation = "-2.4"
+points = "16, 8; 470, 0; 454, 68; 0, 62"
+props = { background = "#F4E4C1" }
+z = 7
+visible = "launcher.results_count > 0"
+opacity = "launcher.launching ? 0 : 1"
+animate = [
+  { property = "y", duration_ms = 500, easing = "spring", spring = { stiffness = 230, damping = 15, mass = 1 } },
+  { property = "x", duration_ms = 500, easing = "spring", spring = { stiffness = 200, damping = 16, mass = 1 } },
+  { property = "scale", from = 0.8, duration_ms = 400, delay = 300, easing = "ease_out_back" },
+]
+
+[[nodes]]
+id = "selector_gold"
+type = "Rectangle"
+x = "28 + shake(8, 4)"
+y = "214 + (launcher.selected_index - clamp(launcher.selected_index - 4, 0, launcher.results_count)) * 64"
+width = "5"
+height = "78"
+skew = "-14"
+rotation = "-3"
+props = { background = "#C5A35A" }
+z = 8
+visible = "launcher.results_count > 0"
+opacity = "launcher.launching ? 0 : 1"
+animate = [
+  { property = "y", duration_ms = 500, easing = "spring", spring = { stiffness = 230, damping = 15, mass = 1 } },
+]
+
+[[nodes]]
+id = "selector_mark"
+type = "Polygon"
+x = "8 + shake(12, 11)"
+y = "228 + (launcher.selected_index - clamp(launcher.selected_index - 4, 0, launcher.results_count)) * 64"
+width = "28"
+height = "36"
+rotation = "-8 + shake(4, 12)"
+points = "0, 0; 28, 18; 0, 36"
+props = { background = "#1A1208" }
+z = 8
+visible = "launcher.results_count > 0"
+opacity = "launcher.launching ? 0 : 1"
+animate = [
+  { property = "y", duration_ms = 500, easing = "spring", spring = { stiffness = 250, damping = 14, mass = 1 } },
+  { property = "x", duration_ms = 440, easing = "spring", spring = { stiffness = 220, damping = 16, mass = 1 } },
+  { property = "rotation", duration_ms = 380, easing = "spring", spring = { stiffness = 280, damping = 12, mass = 1 } },
+]
+
+[[nodes]]
+id = "selector_tag"
+type = "Text"
+x = "520"
+y = "210 + (launcher.selected_index - clamp(launcher.selected_index - 4, 0, launcher.results_count)) * 64"
+width = "56"
+height = "18"
+rotation = "12"
+text = "SEL"
+props = { color = "#F4E4C1", font_size = "11", font_family = "Oswald", font_weight = "700", align = "center" }
+z = 8
+visible = "launcher.results_count > 0"
+opacity = "launcher.launching ? 0 : 1"
+animate = [
+  { property = "y", duration_ms = 520, easing = "spring", spring = { stiffness = 210, damping = 16, mass = 1 } },
+  { property = "rotation", from = 28, duration_ms = 420, delay = 320, easing = "ease_out_back" },
+]
+
+# =====================================================================
+# Layer 5 — results (cascade, not a GTK list)
+# =====================================================================
 [[nodes]]
 id = "results"
 type = "Repeater"
-x = "36"
-y = "190 - clamp(launcher.selected_index - 3, 0, launcher.results_count) * 58"
-width = "556"
-height = "floor((window.height - 190 - 32) / 58) * 58"
+x = "56"
+y = "226 - clamp(launcher.selected_index - 4, 0, launcher.results_count) * 64"
+width = "560"
+height = "346"
 model = "launcher.results"
-delegate = "p5_row"
-props = { gap = "14", item_height = "44", layout = "vertical", clip_y = "190", clip_pad = "100" }
+delegate = "archive_row"
+z = 9
+props = { gap = "12", item_height = "52", layout = "vertical", clip_y = "226", clip_pad = "140" }
 
-# ---------------------------------------------------------------------
-# Preview — floating white-bordered card over the desktop
-# ---------------------------------------------------------------------
+# =====================================================================
+# Layer 6 — archive dossier (right, reacts to selection)
+# =====================================================================
 [[nodes]]
-id = "preview_card"
-type = "Rectangle"
-x = "620"
-y = "190"
-width = "252"
-height = "330"
-skew = "-4"
-rotation = "sin(time * 0.45) * 0.5"
+id = "archive_plate"
+type = "Polygon"
+x = "window.width - 410 + shake(4, 13) + launcher.launching * 140"
+y = "72 + shake(5, 14)"
+width = "360"
+height = "468"
+rotation = "1.6 + shake(1.4, 15)"
+points = "28, 0; 360, 18; 332, 468; 0, 444"
+props = { background = "#182338", border = "1px #C5A35A" }
+z = 10
 visible = "launcher.results_count > 0"
-props = { background = "#0C0C0D", border = "3px #FFFFFF", shadow = "10px 12px 0 #000000" }
-animate = [{ property = "x", from = "window.width + 60", duration_ms = 340, delay = 140, easing = "ease_out_expo" }, { property = "opacity", from = 0, duration_ms = 200, delay = 140, easing = "ease_out_quad" }]
+opacity = "launcher.launching ? 0 : 1"
+animate = [
+  { property = "x", from = "window.width + 80", duration_ms = 560, delay = 140, easing = "spring", spring = { stiffness = 150, damping = 18, mass = 1 } },
+  { property = "rotation", duration_ms = 480, easing = "spring", spring = { stiffness = 200, damping = 16, mass = 1 } },
+]
 
 [[nodes]]
-id = "preview_bite"
+id = "archive_gold_tl"
 type = "Rectangle"
-x = "604"
-y = "494"
-width = "32"
-height = "32"
-rotation = "-12"
+x = "window.width - 376"
+y = "92"
+width = "36"
+height = "2"
+props = { background = "#C5A35A" }
+z = 11
 visible = "launcher.results_count > 0"
-props = { background = "#000000" }
+opacity = "launcher.launching ? 0 : 1"
 
 [[nodes]]
-id = "kicker_band"
+id = "archive_gold_tl_v"
 type = "Rectangle"
-x = "612"
-y = "172"
-width = "268"
+x = "window.width - 376"
+y = "92"
+width = "2"
 height = "36"
-skew = "-4"
-rotation = "-1.4"
+props = { background = "#C5A35A" }
+z = 11
 visible = "launcher.results_count > 0"
-props = { background = "#E60012", border = "3px #000000" }
-animate = [{ property = "x", from = "window.width + 60", duration_ms = 340, delay = 120, easing = "ease_out_expo" }]
+opacity = "launcher.launching ? 0 : 1"
 
 [[nodes]]
-id = "kicker_slash_a"
+id = "archive_gold_br"
 type = "Rectangle"
-x = "660 + sin(time * 0.9) * 30"
-y = "178"
-width = "4"
-height = "24"
-rotation = "-12"
+x = "window.width - 130"
+y = "508"
+width = "36"
+height = "2"
+props = { background = "#C5A35A" }
+z = 11
 visible = "launcher.results_count > 0"
-opacity = "0.4"
-props = { background = "#FFFFFF" }
+opacity = "launcher.launching ? 0 : 1"
 
 [[nodes]]
-id = "kicker_slash_b"
-type = "Rectangle"
-x = "800 + sin(time * 0.9 + 2.4) * 30"
-y = "178"
-width = "4"
-height = "24"
-rotation = "-12"
-visible = "launcher.results_count > 0"
-opacity = "0.4"
-props = { background = "#FFFFFF" }
-
-[[nodes]]
-id = "kicker_text"
+id = "archive_kicker"
 type = "Text"
-x = "630"
-y = "172"
-width = "244"
-height = "36"
-text = "SELECTED"
+x = "window.width - 368"
+y = "108"
+width = "280"
+height = "16"
+text = "SELECTED RECORD"
+props = { color = "#C5A35A", font_size = "10", font_family = "Oswald", font_weight = "700", align = "left" }
+z = 11
 visible = "launcher.results_count > 0"
-props = { color = "#FFFFFF", font_size = "16", font_weight = "700", font_family = "Antonio", align = "left" }
-animate = [{ property = "opacity", from = 0, duration_ms = 180, delay = 240, easing = "ease_out_quad" }]
+opacity = "launcher.launching ? 0 : 1"
 
 [[nodes]]
-id = "p_name"
+id = "archive_letter"
 type = "Text"
-x = "636"
-y = "226"
-width = "222"
-height = "62"
+x = "window.width - 376"
+y = "128"
+width = "280"
+height = "150"
+text = "initial(launcher.selected_result.name)"
+props = { color = "#F4E4C1", font_size = "128", font_family = "Abril Fatface", align = "left" }
+z = 11
+visible = "launcher.results_count > 0"
+opacity = "launcher.launching ? 0 : 1"
+animate = [
+  { property = "scale", from = 1.22, duration_ms = 300, trigger = "select", easing = "ease_out_back" },
+  { property = "y", duration_ms = 420, easing = "spring", spring = { stiffness = 180, damping = 18, mass = 1 } },
+]
+
+[[nodes]]
+id = "archive_icon"
+type = "Image"
+x = "window.width - 178"
+y = "148"
+width = "56"
+height = "56"
+props = { src = "launcher.selected_result.icon" }
+z = 11
+visible = "launcher.results_count > 0 && launcher.selected_result.icon != ''"
+opacity = "launcher.launching ? 0 : 1"
+
+[[nodes]]
+id = "archive_name"
+type = "Text"
+x = "window.width - 376"
+y = "286"
+width = "300"
+height = "72"
 text = "launcher.selected_result.name"
-text_case = "upper"
+props = { color = "#F4E4C1", font_size = "26", font_family = "Playfair Display Black", font_weight = "900", align = "left" }
+z = 11
 visible = "launcher.results_count > 0"
-props = { color = "#FFFFFF", font_size = "24", font_weight = "700", font_family = "Antonio", align = "left" }
-animate = [{ property = "opacity", from = 0, duration_ms = 200, delay = 260, easing = "ease_out_quad" }]
+opacity = "launcher.launching ? 0 : 1"
+animate = [{ property = "x", from = "window.width - 298", duration_ms = 280, trigger = "select", easing = "ease_out_expo" }]
 
 [[nodes]]
-id = "p_id"
+id = "archive_desc"
 type = "Text"
-x = "636"
-y = "290"
-width = "222"
-height = "16"
-text = "launcher.selected_result.id"
-visible = "launcher.results_count > 0"
-props = { color = "#6E6E73", font_size = "10", font_weight = "400", align = "left" }
-animate = [{ property = "opacity", from = 0, duration_ms = 200, delay = 290, easing = "ease_out_quad" }]
-
-[[nodes]]
-id = "p_desc"
-type = "Text"
-x = "636"
-y = "316"
-width = "222"
-height = "84"
+x = "window.width - 376"
+y = "358"
+width = "292"
+height = "56"
 text = "launcher.selected_result.description"
-visible = "launcher.selected_result.description != ''"
-props = { color = "rgba(255,255,255,0.72)", font_size = "11", font_weight = "400", font_family = "DejaVu Serif", align = "left" }
-animate = [{ property = "opacity", from = 0, duration_ms = 200, delay = 320, easing = "ease_out_quad" }]
+visible = "launcher.results_count > 0 && launcher.selected_result.description != ''"
+props = { color = "rgba(244,228,193,0.55)", font_size = "13", font_family = "Oswald", align = "left" }
+z = 11
+opacity = "launcher.launching ? 0 : 1"
 
 [[nodes]]
-id = "p_exec"
+id = "archive_id"
 type = "Text"
-x = "636"
-y = "316"
-width = "222"
+x = "window.width - 376"
+y = "418"
+width = "292"
 height = "20"
-text = "launcher.selected_result.exec"
-visible = "launcher.selected_result.description == ''"
-props = { color = "#585858", font_size = "10", font_weight = "400", align = "left" }
-animate = [{ property = "opacity", from = 0, duration_ms = 200, delay = 320, easing = "ease_out_quad" }]
+text = "launcher.selected_result.id"
+visible = "launcher.results_count > 0 && launcher.selected_result.description == ''"
+props = { color = "rgba(244,228,193,0.4)", font_size = "12", font_family = "Oswald", align = "left" }
+z = 11
+opacity = "launcher.launching ? 0 : 1"
 
 [[nodes]]
-id = "p_hero"
+id = "mode_app"
 type = "Text"
-x = "628"
-y = "424"
-width = "236"
-height = "88"
-text = "launcher.selected_index"
-scale = "1 + 0.045 * sin(time * 2.8)"
-rotation = "sin(time * 1.3) * 1.6"
-visible = "launcher.results_count > 0"
-props = { color = "#FFD800", font_size = "68", font_weight = "700", font_family = "Antonio", align = "right", outline = "3px #000000" }
-animate = [{ property = "opacity", from = 0, duration_ms = 220, delay = 360, easing = "ease_out_quad" }]
+x = "window.width - 376"
+y = "452"
+width = "80"
+height = "22"
+text = "APP"
+visible = "launcher.results_count > 0 && launcher.selected_result.mode == 'drun'"
+props = { color = "#C41E3A", font_size = "14", font_family = "Oswald", font_weight = "700", align = "left" }
+z = 11
+opacity = "launcher.launching ? 0 : 1"
 
 [[nodes]]
-id = "p_hero_star"
-type = "Polygon"
-x = "632"
-y = "428"
-width = "20"
-height = "20"
-rotation = "time * 70"
-visible = "launcher.results_count > 0"
-opacity = "0.55 + 0.35 * sin(time * 2.4)"
-points = "10,0; 12.3,7.7; 20,10; 12.3,12.3; 10,20; 7.7,12.3; 0,10; 7.7,7.7"
-props = { background = "#FFD800" }
-
-# ---------------------------------------------------------------------
-# Star plate — floating black chip with spinning stars, top-right notch
-# ---------------------------------------------------------------------
-[[nodes]]
-id = "star_plate"
-type = "Rectangle"
-x = "762 + sin(time * 0.36 + 2.2) * 8"
-y = "84"
-width = "140"
-height = "96"
-rotation = "-8 + sin(time * 0.5 + 0.7) * 1.4"
-skew = "-8"
-props = { background = "#000000", border = "2px #FFFFFF" }
-animate = [{ property = "opacity", from = 0, duration_ms = 240, delay = 380, easing = "ease_out_quad" }]
-
-[[nodes]]
-id = "star_cluster"
-type = "Repeater"
-x = "768"
-y = "90"
-width = "130"
-height = "88"
-props = { count = "6", gap = "0", item_height = "0", layout = "vertical", clip_y = "90" }
-delegate = "star_cell"
-
-# ---------------------------------------------------------------------
-# White torn band — the settings "OK" strip, footer lives on it
-# ---------------------------------------------------------------------
-[[nodes]]
-id = "white_band"
-type = "Polygon"
-x = "0"
-y = "0"
-width = "900"
-height = "600"
-points = "140,680; 152,558; 188,572; 224,556; 260,571; 296,556; 332,572; 368,557; 404,571; 440,556; 476,572; 512,557; 548,571; 584,556; 620,572; 656,557; 692,571; 728,556; 764,572; 800,557; 836,571; 872,556; 908,572; 944,557; 980,571; 980,680"
-props = { background = "#FFFFFF" }
-
-[[nodes]]
-id = "footer_dash_a"
-type = "Rectangle"
-x = "236 + sin(time * 0.8) * 9"
-y = "582"
-width = "28"
-height = "6"
-skew = "-14"
-props = { background = "#000000" }
-
-[[nodes]]
-id = "footer_dash_b"
-type = "Rectangle"
-x = "288 + sin(time * 0.8 + 1.6) * 9"
-y = "582"
-width = "28"
-height = "6"
-skew = "-14"
-props = { background = "#000000" }
-
-[[nodes]]
-id = "footer_ok"
+id = "mode_cmd"
 type = "Text"
-x = "350"
-y = "570"
-width = "180"
-height = "28"
-text = "OK  LAUNCH"
-props = { color = "#000000", font_size = "18", font_weight = "700", font_family = "Antonio", align = "center" }
+x = "window.width - 376"
+y = "452"
+width = "80"
+height = "22"
+text = "CMD"
+visible = "launcher.results_count > 0 && launcher.selected_result.mode == 'run'"
+props = { color = "#C41E3A", font_size = "14", font_family = "Oswald", font_weight = "700", align = "left" }
+z = 11
+opacity = "launcher.launching ? 0 : 1"
 
 [[nodes]]
-id = "footer_star"
-type = "Polygon"
-x = "548"
-y = "574"
-width = "16"
-height = "16"
-rotation = "time * 40"
-points = "9,0; 11.2,6.8; 18,9; 11.2,11.2; 9,18; 6.8,11.2; 0,9; 6.8,6.8"
-props = { background = "#E60012" }
-
-[[nodes]]
-id = "footer_esc"
+id = "mode_sum"
 type = "Text"
-x = "590"
-y = "570"
-width = "180"
-height = "28"
-text = "ESC  CLOSE"
-props = { color = "#000000", font_size = "18", font_weight = "700", font_family = "Antonio", align = "center" }
+x = "window.width - 376"
+y = "452"
+width = "80"
+height = "22"
+text = "SUM"
+visible = "launcher.results_count > 0 && launcher.selected_result.mode == 'calc'"
+props = { color = "#C41E3A", font_size = "14", font_family = "Oswald", font_weight = "700", align = "left" }
+z = 11
+opacity = "launcher.launching ? 0 : 1"
 
 [[nodes]]
-id = "footer_dash_c"
-type = "Rectangle"
-x = "786 + sin(time * 0.8 + 3.1) * 9"
-y = "582"
-width = "28"
-height = "6"
-skew = "-14"
-props = { background = "#000000" }
+id = "mode_win"
+type = "Text"
+x = "window.width - 376"
+y = "452"
+width = "80"
+height = "22"
+text = "WIN"
+visible = "launcher.results_count > 0 && launcher.selected_result.mode == 'window'"
+props = { color = "#C41E3A", font_size = "14", font_family = "Oswald", font_weight = "700", align = "left" }
+z = 11
+opacity = "launcher.launching ? 0 : 1"
 
-# ---------------------------------------------------------------------
-# Row delegate — the settings row.
-# Cascade: every node shifts LEFT by 5px per visible row, so the list
-# marches down-left and scrolling glides on the diagonal. The x spring
-# chases the cascade target on every selection change.
-# ---------------------------------------------------------------------
-[components.p5_row]
-  [[components.p5_row.animate]]
-  property = "opacity"
-  from = 0
-  duration_ms = 180
-  delay = "index * 22"
-  easing = "ease_out_quad"
+# Empty stamp
+[[nodes]]
+id = "empty_plate"
+type = "Polygon"
+x = "window.width - 398"
+y = "200"
+width = "280"
+height = "120"
+rotation = "-4"
+points = "12, 8; 280, 0; 268, 120; 0, 110"
+props = { background = "#C41E3A" }
+z = 10
+visible = "launcher.results_count == 0 && launcher.query != ''"
+opacity = "launcher.launching ? 0 : 1"
+animate = [{ property = "rotation", from = -18, duration_ms = 420, easing = "ease_out_back" }]
 
-  [[components.p5_row.animate]]
+[[nodes]]
+id = "empty_stamp"
+type = "Text"
+x = "window.width - 398"
+y = "228"
+width = "280"
+height = "64"
+rotation = "-4"
+text = "NO RECORD"
+props = { color = "#F4E4C1", font_size = "28", font_family = "Oswald", font_weight = "700", align = "center" }
+z = 11
+visible = "launcher.results_count == 0 && launcher.query != ''"
+opacity = "launcher.launching ? 0 : 1"
+
+# =====================================================================
+# Layer 7 — footer
+# =====================================================================
+[[nodes]]
+id = "footer"
+type = "Text"
+x = "110"
+y = "568"
+width = "400"
+height = "18"
+text = "MOVE    OPEN    ESC CLOSE"
+props = { color = "rgba(26,18,8,0.45)", font_size = "10", font_family = "Oswald", font_weight = "700", align = "left" }
+z = 12
+opacity = "launcher.launching ? 0 : 1"
+animate = [{ property = "opacity", from = 0, duration_ms = 300, delay = 360, easing = "ease_out_quad" }]
+
+# =====================================================================
+# Components
+# =====================================================================
+[components.hatch]
+  [[components.hatch.nodes]]
+  id = "hatch_line"
+  type = "Rectangle"
+  x = "window.width * 0.42 + index * 22 + min(launcher.selected_index, 12) * 4"
+  y = "index * 86 - 50"
+  width = "540"
+  height = "3"
+  rotation = "-26"
+  props = { background = "rgba(244,228,193,0.045)" }
+  z = 1
+  animate = [{ property = "x", duration_ms = 640, easing = "spring", spring = { stiffness = 80, damping = 20, mass = 1 } }]
+
+[components.archive_row]
+  [[components.archive_row.animate]]
   property = "x"
-  from = -90
-  duration_ms = 300
-  delay = "index * 22"
+  from = -110
+  duration_ms = 520
+  delay = "index * 36"
   easing = "spring"
-  spring = { stiffness = 380, damping = 20, mass = 1 }
+  spring = { stiffness = 170, damping = 20, mass = 1 }
 
-  [[components.p5_row.animate]]
-  property = "y"
-  duration_ms = 240
-  easing = "spring"
-  spring = { stiffness = 480, damping = 26, mass = 1 }
-
-  [[components.p5_row.animate]]
-  property = "scale"
-  duration_ms = 220
-  easing = "spring"
-  spring = { stiffness = 420, damping = 20, mass = 1 }
-
-  # Violet + cyan plates — the title-menu stack (selected only)
-  [[components.p5_row.nodes]]
-  id = "plate_violet"
+  [[components.archive_row.nodes]]
+  id = "row_hit"
   type = "Rectangle"
-  x = "18 - (index - clamp(launcher.selected_index - 3, 0, launcher.results_count)) * 5"
-  y = "12"
-  width = "540"
-  height = "44"
-  skew = "-16"
-  visible = "is_selected"
-  props = { background = "#7B4CE0" }
-
-  [[components.p5_row.nodes]]
-  id = "plate_cyan"
-  type = "Rectangle"
-  x = "9 - (index - clamp(launcher.selected_index - 3, 0, launcher.results_count)) * 5"
-  y = "6"
-  width = "540"
-  height = "44"
-  skew = "-16"
-  visible = "is_selected"
-  props = { background = "#29ABE2" }
-
-  # The bar — white, or the red slab when selected; independent wobble
-  [[components.p5_row.nodes]]
-  id = "row_bar"
-  type = "Rectangle"
-  x = "0 - (index - clamp(launcher.selected_index - 3, 0, launcher.results_count)) * 5"
+  x = "is_selected * 28"
   y = "0"
-  width = "540"
-  height = "44"
-  skew = "-16"
-  rotation = "sin(time * 0.55 + index * 1.3) * 0.45"
-  scale = "is_selected ? 1.05 : 1.0"
-  props = { background = "is_selected ? #E60012 : #FFFFFF", border = "is_selected ? '0px #000000' : '3px #000000'" }
+  width = "500"
+  height = "52"
+  props = { background = "transparent" }
   on_click = "activate(index)"
+  z = 9
+  animate = [{ property = "x", duration_ms = 420, easing = "spring", spring = { stiffness = 200, damping = 18, mass = 1 } }]
 
-  # Film perforation — black sprockets on the red slab
-  [[components.p5_row.nodes]]
-  id = "perf_a"
-  type = "Rectangle"
-  x = "14 - (index - clamp(launcher.selected_index - 3, 0, launcher.results_count)) * 5"
-  y = "7"
-  width = "7"
-  height = "7"
-  visible = "is_selected"
-  props = { background = "#000000" }
-
-  [[components.p5_row.nodes]]
-  id = "perf_b"
-  type = "Rectangle"
-  x = "14 - (index - clamp(launcher.selected_index - 3, 0, launcher.results_count)) * 5"
-  y = "19"
-  width = "7"
-  height = "7"
-  visible = "is_selected"
-  props = { background = "#000000" }
-
-  [[components.p5_row.nodes]]
-  id = "perf_c"
-  type = "Rectangle"
-  x = "14 - (index - clamp(launcher.selected_index - 3, 0, launcher.results_count)) * 5"
-  y = "31"
-  width = "7"
-  height = "7"
-  visible = "is_selected"
-  props = { background = "#000000" }
-
-  # Mode tab — juts past the bar's right edge at varying depth
-  [[components.p5_row.nodes]]
-  id = "mode_tab"
-  type = "Rectangle"
-  x = "516 + (index - floor(index / 3) * 3) * 12 - (index - clamp(launcher.selected_index - 3, 0, launcher.results_count)) * 5"
+  [[components.archive_row.nodes]]
+  id = "row_idx"
+  type = "Text"
+  x = "is_selected * 28"
   y = "8"
-  width = "66"
-  height = "28"
-  skew = "-16"
-  props = { background = "is_selected ? #FFFFFF : #000000", border = "is_selected ? '0px #000000' : '2px #FFFFFF'" }
+  width = "36"
+  height = "36"
+  text = "index + 1"
+  props = { color = "is_selected ? #F4E4C1 : rgba(26,18,8,0.38)", font_size = "is_selected ? 16 : 12", font_family = "Oswald", font_weight = "700", align = "left" }
+  z = 10
+  opacity = "is_selected ? 1 : 0.7"
+  animate = [{ property = "x", duration_ms = 420, easing = "spring", spring = { stiffness = 200, damping = 18, mass = 1 } }]
 
-  [[components.p5_row.nodes]]
-  id = "mode_tab_text"
-  type = "Text"
-  x = "516 + (index - floor(index / 3) * 3) * 12 - (index - clamp(launcher.selected_index - 3, 0, launcher.results_count)) * 5"
+  [[components.archive_row.nodes]]
+  id = "row_icon_plate"
+  type = "Polygon"
+  x = "28 + is_selected * 28"
   y = "8"
-  width = "66"
+  width = "36"
+  height = "36"
+  rotation = "is_selected ? -8 : -3"
+  points = "4, 0; 36, 4; 32, 36; 0, 32"
+  props = { background = "is_selected ? #1A1208 : #E6D0A4" }
+  z = 10
+  scale = "is_selected ? 1.12 : 1"
+  animate = [
+    { property = "x", duration_ms = 420, easing = "spring", spring = { stiffness = 200, damping = 18, mass = 1 } },
+    { property = "scale", duration_ms = 380, easing = "spring", spring = { stiffness = 260, damping = 16, mass = 1 } },
+    { property = "rotation", duration_ms = 380, easing = "spring", spring = { stiffness = 240, damping = 16, mass = 1 } },
+  ]
+
+  [[components.archive_row.nodes]]
+  id = "row_icon"
+  type = "Image"
+  x = "32 + is_selected * 28"
+  y = "12"
+  width = "28"
   height = "28"
-  text = "item_mode == 'calc' ? 'CALC' : item_mode == 'run' ? 'CMD' : item_mode == 'window' ? 'WIN' : 'APP'"
-  props = { color = "is_selected ? #000000 : #FFFFFF", font_size = "14", font_weight = "700", font_family = "Antonio", align = "center" }
+  props = { src = "item_icon" }
+  visible = "item_icon != ''"
+  z = 11
+  animate = [{ property = "x", duration_ms = 420, easing = "spring", spring = { stiffness = 200, damping = 18, mass = 1 } }]
 
-  # No-tag — black chip hanging off the left edge
-  [[components.p5_row.nodes]]
-  id = "no_chip"
-  type = "Rectangle"
-  x = "-46 - (index - clamp(launcher.selected_index - 3, 0, launcher.results_count)) * 5"
-  y = "13"
-  width = "48"
-  height = "22"
-  skew = "-16"
-  props = { background = "#000000", border = "2px #FFFFFF" }
-
-  [[components.p5_row.nodes]]
-  id = "no_label"
+  [[components.archive_row.nodes]]
+  id = "row_letter"
   type = "Text"
-  x = "-42 - (index - clamp(launcher.selected_index - 3, 0, launcher.results_count)) * 5"
-  y = "13"
-  width = "20"
-  height = "22"
-  text = "No."
-  props = { color = "rgba(255,255,255,0.75)", font_size = "9", font_weight = "400", font_family = "Antonio", align = "left" }
+  x = "28 + is_selected * 28"
+  y = "8"
+  width = "36"
+  height = "36"
+  text = "initial(item_name)"
+  visible = "item_icon == ''"
+  props = { color = "is_selected ? #F4E4C1 : #1A1208", font_size = "16", font_family = "Oswald", font_weight = "700", align = "center" }
+  z = 11
+  animate = [{ property = "x", duration_ms = 420, easing = "spring", spring = { stiffness = 200, damping = 18, mass = 1 } }]
 
-  [[components.p5_row.nodes]]
-  id = "no_num"
-  type = "Text"
-  x = "-24 - (index - clamp(launcher.selected_index - 3, 0, launcher.results_count)) * 5"
-  y = "13"
-  width = "24"
-  height = "22"
-  text = "index"
-  props = { color = "#FFFFFF", font_size = "13", font_weight = "700", font_family = "Antonio", align = "right" }
-
-  # Red hero numeral (white on the selected slab)
-  [[components.p5_row.nodes]]
-  id = "row_index"
-  type = "Text"
-  x = "34 - (index - clamp(launcher.selected_index - 3, 0, launcher.results_count)) * 5"
-  y = "0"
-  width = "52"
-  height = "44"
-  text = "index"
-  props = { color = "is_selected ? #FFFFFF : #E60012", font_size = "is_selected ? 27 : 23", font_weight = "700", font_family = "Antonio", align = "right" }
-
-  # Name — caps Antonio, black on white / white on red
-  [[components.p5_row.nodes]]
+  [[components.archive_row.nodes]]
   id = "row_name"
   type = "Text"
-  x = "96 - (index - clamp(launcher.selected_index - 3, 0, launcher.results_count)) * 5"
-  y = "3"
-  width = "404"
-  height = "24"
+  x = "76 + is_selected * 28"
+  y = "is_selected ? 2 : 10"
+  width = "400"
+  height = "is_selected ? 32 : 32"
   text = "item_name"
-  text_case = "upper"
-  props = { color = "is_selected ? #FFFFFF : #000000", font_size = "is_selected ? 18 : 16", font_weight = "700", font_family = "Antonio", align = "left" }
+  scale = "is_selected ? 1.06 : 1"
+  props = { color = "#1A1208", font_size = "is_selected ? 22 : 16", font_family = "is_selected ? 'Playfair Display Black' : 'Oswald'", font_weight = "is_selected ? 900 : 700", align = "left" }
+  z = 10
+  opacity = "is_selected ? 1 : 0.62"
+  animate = [
+    { property = "x", duration_ms = 420, easing = "spring", spring = { stiffness = 200, damping = 18, mass = 1 } },
+    { property = "scale", duration_ms = 380, easing = "spring", spring = { stiffness = 260, damping = 16, mass = 1 } },
+    { property = "y", duration_ms = 320, easing = "ease_out_cubic" },
+  ]
 
-  # Description — quiet serif line
-  [[components.p5_row.nodes]]
-  id = "row_desc"
+  [[components.archive_row.nodes]]
+  id = "row_meta"
   type = "Text"
-  x = "97 - (index - clamp(launcher.selected_index - 3, 0, launcher.results_count)) * 5"
-  y = "26"
-  width = "404"
-  height = "15"
-  text = "item_description"
-  visible = "item_description != ''"
-  props = { color = "is_selected ? rgba(255,255,255,0.78) : #5A5A5E", font_size = "10", font_weight = "400", font_family = "DejaVu Serif", align = "left" }
-
-  # Fallback: exec id when there is no description
-  [[components.p5_row.nodes]]
-  id = "row_id"
-  type = "Text"
-  x = "97 - (index - clamp(launcher.selected_index - 3, 0, launcher.results_count)) * 5"
-  y = "26"
-  width = "404"
-  height = "15"
-  text = "item_id"
-  visible = "item_description == ''"
-  props = { color = "is_selected ? rgba(255,255,255,0.6) : #8A8A8E", font_size = "10", font_weight = "400", align = "left" }
-
-# ---------------------------------------------------------------------
-# Decorative delegates
-# ---------------------------------------------------------------------
-[components.perf_hole]
-  [[components.perf_hole.nodes]]
-  id = "hole"
-  type = "Rectangle"
-  x = "0"
-  y = "index * 26 + time * 16 - floor((index * 26 + time * 16) / 164) * 164"
-  width = "10"
-  height = "10"
-  rotation = "-12"
-  opacity = "0.65"
-  props = { background = "#FFFFFF" }
-
-[components.star_cell]
-  [[components.star_cell.nodes]]
-  id = "star"
-  type = "Polygon"
-  x = "(index - floor(index / 3) * 3) * 42 + 6"
-  y = "floor(index / 3) * 40 + 8"
-  width = "16"
+  x = "78 + is_selected * 28"
+  y = "32"
+  width = "380"
   height = "16"
-  rotation = "time * 30 + index * 40"
-  opacity = "0.35 + 0.3 * sin(time * 1.6 + index * 0.9)"
-  points = "8,0; 10.2,5.8; 16,8; 10.2,10.2; 8,16; 5.8,10.2; 0,8; 5.8,5.8"
-  props = { background = "#FFFFFF" }
+  text = "item_description"
+  visible = "is_selected && item_description != ''"
+  props = { color = "rgba(26,18,8,0.5)", font_size = "11", font_family = "Oswald", align = "left" }
+  z = 10
+  animate = [{ property = "opacity", from = 0, duration_ms = 180, trigger = "select", easing = "ease_out_quad" }]

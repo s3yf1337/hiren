@@ -447,23 +447,24 @@ impl AppState {
     /// nets (e.g. when the surface is occluded and callbacks pause).
     fn frame_timeout_ms(&self) -> i32 {
         // Continuous animations get vsync-ish pacing; a `time`-driven theme
-        // with nothing else in motion (caret blink, ambient drift) is throttled
-        // to ~20 fps — plenty for slow effects, a fifth of the CPU.
+        // with nothing else in motion is throttled to ~20 fps unless the
+        // theme sets `[window] time_hz` (caret/impact themes use 60).
         let animating = self.core.runtime.animating();
         let nf = self.core.needs_frame();
         if std::env::var_os("HIREN_LOOP_DEBUG").is_some() {
             eprintln!(
-                "[loop] animating={} uses_time={} dirty={} frame_arrived={}",
+                "[loop] animating={} uses_time={} impulse={} dirty={} frame_arrived={}",
                 animating,
                 self.core.last_uses_time_debug(),
+                self.core.impulse_ticking(),
                 self.dirty,
                 self.frame_arrived,
             );
         }
         if animating {
             FRAME_MS
-        } else if self.core.last_uses_time_debug() {
-            50
+        } else if self.core.last_uses_time_debug() || self.core.impulse_ticking() {
+            self.core.time_frame_ms()
         } else if nf || self.dirty {
             0
         } else if self.core.auto_close_pending() {
@@ -490,8 +491,8 @@ impl AppState {
         let animating = self.core.runtime.animating();
         let throttle_ms = if animating || self.dirty {
             0
-        } else if self.core.last_uses_time_debug() {
-            45
+        } else if self.core.last_uses_time_debug() || self.core.impulse_ticking() {
+            self.core.time_frame_ms()
         } else {
             0
         };

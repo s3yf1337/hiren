@@ -109,8 +109,8 @@ impl WinitApp {
         let core = self.core.as_ref().unwrap();
         self.next_frame = if core.runtime.animating() {
             Some(Instant::now() + Duration::from_millis(16))
-        } else if core.last_uses_time_debug() || core.needs_frame() {
-            Some(Instant::now() + Duration::from_millis(45))
+        } else if core.needs_frame() {
+            Some(Instant::now() + Duration::from_millis(core.time_frame_ms() as u64))
         } else if core.auto_close_pending() {
             Some(Instant::now() + Duration::from_millis(250))
         } else {

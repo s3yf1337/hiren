@@ -57,7 +57,11 @@ pub struct AppCore {
     auto_close: Option<Instant>,
     last_nodes: Vec<ResolvedNode>,
     last_uses_time: bool,
+    last_uses_impulse: bool,
     size: (u32, u32),
+    /// When the theme binds `launcher.launching`, close is deferred so exit
+    /// motion can play. Instant close if the theme does not use it.
+    delay_exit: Option<Instant>,
 }
 
 impl AppCore {
@@ -92,7 +96,9 @@ impl AppCore {
             auto_close,
             last_nodes: Vec::new(),
             last_uses_time: false,
+            last_uses_impulse: false,
             size,
+            delay_exit: None,
         }
     }
 
@@ -109,7 +115,7 @@ impl AppCore {
 
     /// True while an auto-close deadline is pending (idle wake-ups needed).
     pub fn auto_close_pending(&self) -> bool {
-        self.auto_close.is_some()
+        self.auto_close.is_some() || self.delay_exit.is_some()
     }
 
     /// Debug access for the loop instrumentation (HIREN_LOOP_DEBUG=1).
@@ -122,13 +128,29 @@ impl AppCore {
         self.runtime.theme().window.transparent
     }
 
-    pub fn auto_close_expired(&self) -> bool {
-        self.auto_close.map(|d| Instant::now() >= d).unwrap_or(false)
+    /// Frame interval for `time`-only themes (no spring in motion). Default
+    /// ~45 ms (~22 fps); `[window] time_hz = 60` drops this to vsync-ish 16 ms.
+    pub fn time_frame_ms(&self) -> i32 {
+        match self.runtime.theme().window.time_hz.unwrap_or(0) {
+            0 => 45,
+            hz => (1000 / hz.max(1)).clamp(8, 100) as i32,
+        }
     }
 
-    /// Keep rendering while animations are running or the theme uses `time`.
+    pub fn auto_close_expired(&self) -> bool {
+        self.auto_close.map(|d| Instant::now() >= d).unwrap_or(false)
+            || self.delay_exit.map(|d| Instant::now() >= d).unwrap_or(false)
+    }
+
+    /// Keep rendering while animations are running, the theme uses `time`,
+    /// an impact envelope is decaying, or a launch exit is in flight.
     pub fn needs_frame(&self) -> bool {
-        self.runtime.animating() || self.last_uses_time
+        self.runtime.animating() || self.last_uses_time || self.impulse_ticking() || self.delay_exit.is_some()
+    }
+
+    /// Theme wants impulse frames and the envelope is still live.
+    pub fn impulse_ticking(&self) -> bool {
+        self.last_uses_impulse && self.runtime.impulse_active()
     }
 
     /// Resolve + render the current frame; returns resolved nodes.
@@ -145,6 +167,7 @@ impl AppCore {
         }
         self.last_nodes = out.nodes;
         self.last_uses_time = out.uses_time;
+        self.last_uses_impulse = out.uses_impulse;
         &self.last_nodes
     }
 
@@ -299,6 +322,13 @@ impl AppCore {
             self.state.update(|s| s.select(i));
         }
         self.launch(&entry, prefix);
+        self.state.update(|s| s.launching = true);
+        // Themes that bind `launching` get a short window to play an exit
+        // transition. Themes that do not are unchanged (instant close).
+        if crate::ui_runtime::layout::theme_uses_token(self.runtime.theme(), &["launching"]) {
+            self.delay_exit = Some(Instant::now() + Duration::from_millis(420));
+            return Outcome::None;
+        }
         Outcome::Exit
     }
 

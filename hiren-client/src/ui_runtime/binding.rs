@@ -10,7 +10,9 @@
 //!   comparisons         launcher.results_count > 0   item_name == 'Firefox'
 //!   logic               a && b   a || b   !a
 //!   conditionals        cond ? value_if_true : value_if_false   (lazy branches)
-//!   functions           min(a,b) max(a,b) clamp(v,lo,hi) abs floor ceil round sin cos sqrt pow
+//!   functions           min(a,b) max(a,b) clamp(v,lo,hi) mod(a,n) abs floor ceil round sin cos sqrt pow
+//!                       hash(n)  shake(amp, seed)  type_shake(amp, seed)
+//!   impulse             hit  hit_type  since_select  since_type
 //!   measurement         text_width(expr, font_size)  — measured text width in px
 //!
 //! Anything that is not recognized as one of the above passes through unchanged,
@@ -40,6 +42,67 @@ impl Diag {
 
 pub type SharedDiag = Rc<RefCell<Diag>>;
 
+/// Event-driven impact envelope (Persona 5: slam on input, not idle wobble).
+///
+/// `hit` spikes to 1 when the selection changes (and on first open), holds a
+/// couple of frames, then decays. `hit_type` does the same for query edits.
+/// `shake(amp, seed)` turns that envelope into stepped, seeded camera offsets.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Impulse {
+    pub hit: f32,
+    pub hit_type: f32,
+    pub since_select: f32,
+    pub since_type: f32,
+    pub select_gen: u32,
+    pub type_gen: u32,
+}
+
+impl Impulse {
+    pub fn active(&self) -> bool {
+        self.hit > 0.02 || self.hit_type > 0.02
+    }
+}
+
+/// Hold ~2 frames at 60 Hz, then exponential decay (~200 ms to near-zero).
+pub fn hit_envelope(elapsed: f32) -> f32 {
+    const HOLD: f32 = 0.036;
+    const TAU: f32 = 0.065;
+    if elapsed <= HOLD {
+        1.0
+    } else {
+        (-(elapsed - HOLD) / TAU).exp()
+    }
+}
+
+/// Deterministic `0..1` from a numeric seed (stepped P5 shake, not `sin`).
+pub fn hash01(n: f64) -> f64 {
+    let mut x = n.floor() as i64 as u32;
+    x = x.wrapping_add(0x9e3779b9);
+    x = x.wrapping_mul(0x45d9f3b);
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x45d9f3b);
+    x ^= x >> 16;
+    (x as f64) / (u32::MAX as f64 + 1.0)
+}
+
+/// Stepped bipolar offset in `[-amp, amp]`, gated by `hit`.
+/// First ~36 ms is a full-amplitude slam; after that, 42 Hz quantized chaos.
+pub fn shake(amp: f64, seed: f64, hit: f64, since: f64) -> f64 {
+    if hit < 0.008 || amp.abs() < 1e-9 {
+        return 0.0;
+    }
+    const HOLD: f64 = 0.036;
+    if since <= HOLD {
+        let dir = if hash01(seed.floor()) >= 0.5 { 1.0 } else { -1.0 };
+        return dir * amp * hit;
+    }
+    let frame = (since * 42.0).floor() + seed.floor() * 17.0;
+    let bipolar = hash01(frame) * 2.0 - 1.0;
+    let stepped = (bipolar * 4.0).round() / 4.0;
+    let stepped = if stepped.abs() < 0.01 { 0.25 } else { stepped };
+    stepped * amp * hit
+}
+
 /// Text measurement hook (implemented by the text engine; optional).
 /// Arguments: (text, font_size, family) — empty family = default sans-serif.
 pub type Measurer<'a> = &'a dyn Fn(&str, f32, &str) -> f32;
@@ -54,6 +117,8 @@ pub struct EvalContext<'a> {
     pub window_size: (u32, u32),
     /// Animation clock (seconds since runtime start).
     pub time: f32,
+    /// Selection / typing impact (see `Impulse`).
+    pub impulse: Impulse,
     pub measure: Option<Measurer<'a>>,
     pub diag: Option<SharedDiag>,
     /// Node id for diagnostics.
@@ -67,6 +132,7 @@ impl<'a> EvalContext<'a> {
             locals: HashMap::new(),
             window_size,
             time,
+            impulse: Impulse::default(),
             measure: None,
             diag: None,
             node: String::new(),
@@ -183,7 +249,7 @@ fn eval_inner(expr: &str, ctx: &mut EvalContext) -> String {
         }
     }
 
-    // initial(expr) — first character (icon-chip fallback; results carry no icons)
+    // initial(expr) — first grapheme (icon-chip fallback when item_icon is empty)
     if expr.starts_with("initial(") && expr.ends_with(')') {
         if let Some(args) = split_top_args(&expr["initial(".len()..expr.len() - 1]) {
             let text = eval_inner(args[0].trim(), ctx);
@@ -270,10 +336,15 @@ fn property_value(expr: &str, ctx: &EvalContext) -> Option<String> {
         "launcher.selected_index" => return Some(ctx.launcher.selected_index.to_string()),
         "launcher.results_count" => return Some(ctx.launcher.results.len().to_string()),
         "launcher.loading" => return Some(ctx.launcher.loading.to_string()),
+        "launcher.launching" => return Some(ctx.launcher.launching.to_string()),
         "launcher.error" => return Some(ctx.launcher.error.clone().unwrap_or_default()),
         "window.width" => return Some(ctx.window_size.0.to_string()),
         "window.height" => return Some(ctx.window_size.1.to_string()),
         "time" => return Some(format!("{}", ctx.time)),
+        "hit" => return Some(format!("{}", ctx.impulse.hit)),
+        "hit_type" => return Some(format!("{}", ctx.impulse.hit_type)),
+        "since_select" => return Some(format!("{}", ctx.impulse.since_select)),
+        "since_type" => return Some(format!("{}", ctx.impulse.since_type)),
         "true" => return Some("true".into()),
         "false" => return Some("false".into()),
         _ => {}
@@ -288,6 +359,7 @@ fn property_value(expr: &str, ctx: &EvalContext) -> Option<String> {
                 "keywords" => r.keywords.clone(),
                 "mode" => format!("{:?}", r.mode).to_lowercase(),
                 "score" => r.score.to_string(),
+                "icon" => super::icon::resolve(&r.icon),
                 _ => return None,
             });
         }
@@ -306,6 +378,7 @@ fn property_value(expr: &str, ctx: &EvalContext) -> Option<String> {
             ".description" => entry.description.clone().unwrap_or_default(),
             ".keywords" => entry.keywords.clone(),
             ".score" => entry.score.to_string(),
+            ".icon" => super::icon::resolve(&entry.icon),
             _ => return None,
         });
     }
@@ -353,7 +426,8 @@ fn substitute_paths(expr: &str, ctx: &mut EvalContext) -> String {
                     }
                 }
                 out.push_str(&format!("{value}"));
-                i += "text_width(".len() + end + 1;
+                // `end` is the index of `)` in the slice that starts at `(`.
+                i += "text_width".len() + end + 1;
                 continue;
             }
         }
@@ -423,9 +497,15 @@ fn path_number(token: &str, ctx: &EvalContext) -> Option<f64> {
     match token {
         "launcher.selected_index" => Some(ctx.launcher.selected_index as f64),
         "launcher.results_count" => Some(ctx.launcher.results.len() as f64),
+        "launcher.launching" => Some(if ctx.launcher.launching { 1.0 } else { 0.0 }),
+        "launcher.loading" => Some(if ctx.launcher.loading { 1.0 } else { 0.0 }),
         "window.width" => Some(ctx.window_size.0 as f64),
         "window.height" => Some(ctx.window_size.1 as f64),
         "time" => Some(ctx.time as f64),
+        "hit" => Some(ctx.impulse.hit as f64),
+        "hit_type" => Some(ctx.impulse.hit_type as f64),
+        "since_select" => Some(ctx.impulse.since_select as f64),
+        "since_type" => Some(ctx.impulse.since_type as f64),
         "pi" => Some(std::f64::consts::PI),
         "tau" => Some(std::f64::consts::TAU),
         "is_selected" => None,
@@ -458,19 +538,52 @@ fn cached_expr(s: &str) -> Option<meval::Expr> {
     })
 }
 
+fn looks_like_math(expr: &str) -> bool {
+    expr.chars().any(|c| c.is_ascii_digit())
+        || expr.contains("launcher.")
+        || expr.contains("window.")
+        || expr.contains("text_width")
+        || expr.contains("shake")
+        || expr.contains("hash")
+        || expr.contains("since_select")
+        || expr.contains("since_type")
+        || expr.contains("index")
+        || expr.contains("count")
+        || expr.contains("time")
+        || expr.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).any(|t| t == "hit" || t == "hit_type")
+}
+
 fn eval_numeric(expr: &str, ctx: &mut EvalContext) -> Option<f64> {
     // Fast reject: no digits and no known numeric path → not arithmetic.
-    if !expr.chars().any(|c| c.is_ascii_digit()) && !expr.contains("launcher.") && !expr.contains("window.") && !expr.contains("time") && !expr.contains("index") && !expr.contains("count") && !expr.contains("text_width") {
+    if !looks_like_math(expr) {
         return None;
     }
     let substituted = substitute_paths(expr, ctx);
+    let hit = ctx.impulse.hit as f64;
+    let hit_type = ctx.impulse.hit_type as f64;
+    let since_select = ctx.impulse.since_select as f64;
+    let since_type = ctx.impulse.since_type as f64;
     let mut mctx = meval::Context::new();
     mctx.var("pi", std::f64::consts::PI)
         .var("tau", std::f64::consts::TAU)
         .var("time", ctx.time as f64)
+        .var("hit", hit)
+        .var("hit_type", hit_type)
+        .var("since_select", since_select)
+        .var("since_type", since_type)
+        .func("hash", hash01)
+        .func2("shake", move |amp, seed| shake(amp, seed, hit, since_select))
+        .func2("type_shake", move |amp, seed| shake(amp, seed, hit_type, since_type))
         .func2("min", f64::min)
         .func2("max", f64::max)
-        .func3("clamp", |v: f64, lo: f64, hi: f64| v.max(lo).min(hi));
+        .func3("clamp", |v: f64, lo: f64, hi: f64| v.max(lo).min(hi))
+        .func2("mod", |a: f64, n: f64| {
+            if !n.is_finite() || n.abs() < 1e-12 {
+                0.0
+            } else {
+                a - (a / n).floor() * n
+            }
+        });
     // expose remaining numeric locals (index, count, selected_index, ...)
     for (k, v) in &ctx.locals {
         if k.contains('.') {
@@ -697,6 +810,9 @@ mod tests {
         assert_eq!(eval_str("cos(index * 0.5) * 170", &mut c), "12.0253"); // cos(1.5)*170
         assert_eq!(eval_str("clamp(index * 100, 0, 250)", &mut c), "250");
         assert_eq!(eval_str("min(4, 9) + max(1, 2)", &mut c), "6");
+        assert_eq!(eval_str("mod(7, 5)", &mut c), "2");
+        assert_eq!(eval_str("mod(-1, 5)", &mut c), "4");
+        assert_eq!(eval_str("mod(floor(1.5) + 2, 5)", &mut c), "3");
     }
 
     #[test]
@@ -722,5 +838,63 @@ mod tests {
         let s = LauncherState::new();
         let mut c = EvalContext::new(&s, (640, 480), 1.5);
         assert_eq!(eval_str("sin(time * 2) * 10", &mut c), "1.4112"); // sin(3)*10
+    }
+
+    #[test]
+    fn hash_and_shake_are_stepped_not_sine() {
+        let h = hash01(1.0);
+        assert!(h >= 0.0 && h < 1.0);
+        assert!((hash01(1.0) - h).abs() < 1e-12, "deterministic");
+        assert!((hash01(2.0) - h).abs() > 0.01, "changes with seed");
+        assert_eq!(shake(10.0, 1.0, 0.0, 0.0), 0.0);
+        let slam = shake(10.0, 1.0, 1.0, 0.0);
+        assert!((slam.abs() - 10.0).abs() < 1e-9, "opening slam is full amplitude, got {slam}");
+        let later = shake(10.0, 1.0, 0.6, 0.08);
+        assert!(later.abs() > 0.5, "chaos window still offsets, got {later}");
+        assert!((hit_envelope(0.0) - 1.0).abs() < 1e-6);
+        assert!(hit_envelope(0.4) < 0.02);
+    }
+
+    #[test]
+    fn hit_bindings_and_shake_fn() {
+        let s = LauncherState::new();
+        let mut c = EvalContext::new(&s, (640, 480), 0.0);
+        c.impulse.hit = 1.0;
+        c.impulse.since_select = 0.0;
+        c.impulse.hit_type = 1.0;
+        c.impulse.since_type = 0.0;
+        let x = eval_f32("20 + shake(12, 1)", &mut c, 0.0);
+        assert!((x - 20.0).abs() > 5.0, "shake at hit=1 moves the node, got {x}");
+        assert_eq!(eval_f32("hit", &mut c, 0.0), 1.0);
+        let typed = eval_f32("type_shake(8, 2)", &mut c, 0.0);
+        assert!(typed.abs() > 3.0, "type_shake at hit_type=1, got {typed}");
+        assert!(eval_f32("hash(3)", &mut c, -1.0) >= 0.0);
+        c.impulse.hit = 0.0;
+        assert_eq!(eval_f32("20 + shake(12, 1)", &mut c, 0.0), 20.0);
+    }
+
+    #[test]
+    fn min_plus_shake_and_text_width() {
+        let mut s = LauncherState::new();
+        s.query = "f".into();
+        let mut c = EvalContext::new(&s, (1100, 680), 0.0);
+        let meas = |_: &str, _: f32, _: &str| 40.0;
+        c.measure = Some(&meas);
+        assert_eq!(
+            eval_f32(
+                "min(68 + text_width(upper(launcher.query), 42, 'Anton, Archivo Black, Titan One'), 532)",
+                &mut c,
+                -1.0,
+            ),
+            108.0
+        );
+        assert_eq!(
+            eval_f32(
+                "min(68 + text_width(upper(launcher.query), 42, 'Anton, Archivo Black, Titan One'), 532) + shake(14, 1) + type_shake(8, 1)",
+                &mut c,
+                -1.0,
+            ),
+            108.0
+        );
     }
 }

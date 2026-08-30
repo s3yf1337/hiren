@@ -23,11 +23,15 @@ pub struct LauncherState {
     pub selected_index: usize,
     pub loading: bool,
     pub error: Option<String>,
+    /// True after the user activates a result, until the window closes.
+    /// Themes bind this for launch/exit transitions; the window loop delays
+    /// close when the theme actually uses it.
+    pub launching: bool,
 }
 
 impl LauncherState {
     pub fn new() -> Self {
-        Self { query: String::new(), results: Vec::new(), selected_index: 0, loading: false, error: None }
+            Self { query: String::new(), results: Vec::new(), selected_index: 0, loading: false, error: None, launching: false }
     }
     pub fn selected_result(&self) -> Option<&AppEntry> {
         self.results.get(self.selected_index)

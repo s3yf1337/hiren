@@ -21,6 +21,7 @@ pub fn parse_desktop_file(path: &Path) -> Option<AppEntry> {
     let mut try_exec: Option<String> = None;
     let mut categories: Vec<String> = Vec::new();
     let mut keywords: Vec<String> = Vec::new();
+    let mut icon: Option<String> = None;
     let mut no_display = false;
     let mut hidden = false;
 
@@ -81,6 +82,11 @@ pub fn parse_desktop_file(path: &Path) -> Option<AppEntry> {
                         }
                     }
                 }
+                "Icon" => {
+                    if icon.is_none() && !value.trim().is_empty() {
+                        icon = Some(value.trim().to_string());
+                    }
+                }
                 _ => {}
             }
         }
@@ -115,7 +121,7 @@ pub fn parse_desktop_file(path: &Path) -> Option<AppEntry> {
         exec,
         comment.filter(|c| !c.is_empty()),
         keywords,
-    ))
+    ).with_icon(icon.unwrap_or_default()))
 }
 
 /// Проверяет, является ли строка булевым "истинным" значением
@@ -214,6 +220,22 @@ Keywords=music;streaming;
         assert!(entry.keywords.contains("Audio"), "keywords should contain 'Audio': {}", entry.keywords);
         assert!(entry.keywords.contains("streaming"), "keywords should contain 'streaming': {}", entry.keywords);
         println!("testapp keywords: '{}'", entry.keywords);
+    }
+
+    #[test]
+    fn test_parse_desktop_icon() {
+        let desktop_content = "\
+[Desktop Entry]
+Name=IconApp
+Exec=/usr/bin/iconapp
+Type=Application
+Icon=utilities-terminal
+";
+        let dir = tempfile::tempdir().expect("tmp");
+        let file_path = dir.path().join("iconapp.desktop");
+        std::fs::write(&file_path, desktop_content).unwrap();
+        let entry = parse_desktop_file(&file_path).expect("parse");
+        assert_eq!(entry.icon, "utilities-terminal");
     }
 
     #[test]

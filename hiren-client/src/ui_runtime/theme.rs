@@ -54,10 +54,14 @@ pub struct WindowTheme {
     #[serde(default = "default_layer")] pub layer: String, // overlay | top | bottom | background
     /// Anchoring: "center" (all edges anchored, fixed size → centered) or "top"/"bottom".
     #[serde(default = "default_anchor")] pub anchor: String,
+    /// Target Hz for `time`-driven themes when no spring is in motion.
+    /// `None` keeps the ~20 fps idle throttle (caret blink). Set `60` for
+    /// sharp caret + impact frames (atlus). Springs already run at vsync.
+    #[serde(default)] pub time_hz: Option<u32>,
 }
 impl Default for WindowTheme {
     fn default() -> Self {
-        Self { width: None, height: None, transparent: true, blur: false, background: None, layer: default_layer(), anchor: default_anchor() }
+        Self { width: None, height: None, transparent: true, blur: false, background: None, layer: default_layer(), anchor: default_anchor(), time_hz: None }
     }
 }
 impl WindowTheme {
@@ -142,9 +146,9 @@ pub enum FromSpec {
     Expr(String),
 }
 
-#[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Deserialize)]
 pub struct AnimateDef {
-    pub property: String, // x, y, width, height, opacity, rotation, scale
+    pub property: String, // x, y, width, height, opacity, rotation, scale, skew
     #[serde(default = "default_duration")] pub duration_ms: u32,
     #[serde(default)] pub delay_ms: u32,
     /// Per-instance delay (stagger): fixed ms or binding evaluated per repeater instance.
@@ -155,6 +159,9 @@ pub struct AnimateDef {
     #[serde(skip)] pub from_value: Option<f32>,
     #[serde(default = "default_easing")] pub easing: String,
     #[serde(default)] pub spring: Option<SpringDef>,
+    /// Replay `from` → target when this event fires: `"select"` | `"type"`.
+    /// Default (unset) is first appearance only.
+    #[serde(default)] pub trigger: Option<String>,
 }
 fn default_duration() -> u32 { 200 }
 fn default_easing() -> String { "ease_out_cubic".into() }

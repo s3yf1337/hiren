@@ -77,17 +77,25 @@ impl Renderer {
                 if ix1 <= ix0 || iy1 <= iy0 {
                     continue; // entirely clipped away
                 }
+                // The scratch is only as large as the node's padded bbox, and
+                // the node is drawn into it at an offset — clearing and cloning
+                // stay proportional to the node, never to the window (a frame
+                // with ~20 clipped nodes used to memset ~40MB at 22fps).
+                let (rw, rh) = ((br - bx).max(1) as u32, (bb - by).max(1) as u32);
                 let mut scratch = self.scratch.take().unwrap_or_else(|| {
-                    Pixmap::new(width.max(1), height.max(1)).expect("scratch pixmap")
+                    Pixmap::new(rw, rh).expect("scratch pixmap")
                 });
-                if scratch.width() < ix1 as u32 || scratch.height() < iy1 as u32 {
-                    scratch = Pixmap::new(width.max(1), height.max(1)).expect("scratch pixmap");
+                if scratch.width() < rw || scratch.height() < rh {
+                    scratch = Pixmap::new(rw, rh).expect("scratch pixmap");
                 }
                 scratch.fill(SkColor::TRANSPARENT);
-                self.draw_node(node, &mut scratch, scale);
-                if let Some(region) =
-                    tiny_skia::IntRect::from_xywh(ix0, iy0, (ix1 - ix0) as u32, (iy1 - iy0) as u32)
-                {
+                self.draw_node_at(node, &mut scratch, scale, -(bx as f32), -(by as f32));
+                if let Some(region) = tiny_skia::IntRect::from_xywh(
+                    ix0 - bx,
+                    iy0 - by,
+                    (ix1 - ix0) as u32,
+                    (iy1 - iy0) as u32,
+                ) {
                     if let Some(sub) = scratch.clone_rect(region) {
                         pixmap.draw_pixmap(
                             ix0,
@@ -165,7 +173,11 @@ impl Renderer {
     }
 
     fn draw_node(&mut self, node: &ResolvedNode, pixmap: &mut Pixmap, scale: f32) {
-        let t = Self::node_transform_with_scale(node, scale);
+        self.draw_node_at(node, pixmap, scale, 0.0, 0.0);
+    }
+
+    fn draw_node_at(&mut self, node: &ResolvedNode, pixmap: &mut Pixmap, scale: f32, ox: f32, oy: f32) {
+        let t = Self::node_transform_with_scale(node, scale).post_concat(Transform::from_translate(ox, oy));
         let opacity = node.opacity.clamp(0.0, 1.0);
 
         // Shape: polygon path when `points` resolve to ≥3 vertices, else the
@@ -277,7 +289,15 @@ impl Renderer {
                     .get("text_shadow")
                     .and_then(|s| parse_shadow(s))
                     .map(|(dx, dy, _, r, g, b, a)| (dx, dy, (r, g, b, a)));
-                let style = TextStyle::new(&family, outline, hard_shadow);
+                let mut style = TextStyle::new(&family, outline, hard_shadow);
+                style.ransom = TextEngine::ransom_of(&node.props);
+                style.ransom_fonts = TextEngine::ransom_fonts_of(&node.props);
+                style.nowrap = TextEngine::nowrap_of(&node.props);
+                style.ransom_paper = node
+                    .props
+                    .get("ransom_paper")
+                    .and_then(|s| parse_color_str(s.trim()))
+                    .filter(|c| c.3 > 0);
                 // rasterize text at physical resolution for crisp hidpi output
                 if let Some((sub, margin)) = self.text.render(
                     text,
@@ -326,8 +346,11 @@ impl Renderer {
     fn draw_image(&mut self, node: &ResolvedNode, t: Transform, opacity: f32, pixmap: &mut Pixmap, scale: f32) {
         let Some(src) = node.props.get("src") else { return };
         let path = PathBuf::from(src.trim().trim_matches('"').trim_matches('\''));
+        if path.as_os_str().is_empty() {
+            return;
+        }
         if !self.images.contains_key(&path) {
-            let loaded = Pixmap::load_png(&path).ok();
+            let loaded = load_image_file(&path);
             if loaded.is_none() {
                 log::warn!("Image node `{}`: cannot load {}", node.id, path.display());
             }
@@ -348,6 +371,30 @@ impl Renderer {
         let tt = t.pre_translate(node.x, node.y).pre_scale(sx, sy);
         pixmap.draw_pixmap(0, 0, img.as_ref(), &paint, tt, None);
     }
+}
+
+fn load_image_file(path: &PathBuf) -> Option<Pixmap> {
+    if let Ok(pm) = Pixmap::load_png(path) {
+        return Some(pm);
+    }
+    rasterize_svg(path, 128)
+}
+
+fn rasterize_svg(path: &PathBuf, size: u32) -> Option<Pixmap> {
+    let data = std::fs::read(path).ok()?;
+    let tree = resvg::usvg::Tree::from_data(&data, &resvg::usvg::Options::default()).ok()?;
+    let mut pixmap = Pixmap::new(size, size)?;
+    let sz = tree.size();
+    let (w, h) = (sz.width(), sz.height());
+    if w < 0.5 || h < 0.5 {
+        return None;
+    }
+    let s = size as f32 / w.max(h);
+    let tx = (size as f32 - w * s) * 0.5;
+    let ty = (size as f32 - h * s) * 0.5;
+    let transform = Transform::from_translate(tx, ty).pre_scale(s, s);
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    Some(pixmap)
 }
 
 /// Polygon path from node-local vertices (offset by the node position).

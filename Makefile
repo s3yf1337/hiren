@@ -21,7 +21,8 @@ endif
 all: build
 
 build:
-	cargo build --release
+	cargo build --release -p hiren-daemon
+	cargo build --release -p hiren-client --features layer-shell
 
 install: build
 	install -Dm755 target/release/hiren-daemon $(DESTDIR)$(BINDIR)/hiren-daemon
@@ -36,6 +37,10 @@ install: build
 			name=$$(basename "$$t"); \
 			mkdir -p $(DESTDIR)$(SHAREDIR)/$$name; \
 			install -Dm644 $$t/theme.toml $(DESTDIR)$(SHAREDIR)/$$name/theme.toml; \
+			if [ -d "$$t/fonts" ]; then \
+				mkdir -p $(DESTDIR)$(SHAREDIR)/$$name/fonts; \
+				cp -a "$$t/fonts/." $(DESTDIR)$(SHAREDIR)/$$name/fonts/; \
+			fi; \
 			echo "Installed theme $$name"; \
 		fi; \
 	done

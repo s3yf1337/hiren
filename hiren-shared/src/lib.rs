@@ -51,6 +51,10 @@ pub struct AppEntry {
     /// Используется клиентом для гибридной сортировки «релевантность × частота».
     #[serde(default)]
     pub score: i64,
+    /// Имя или путь иконки из `.desktop` (`Icon=`). Пусто, если поля нет.
+    /// Клиент резолвит это в файл через freedesktop lookup.
+    #[serde(default)]
+    pub icon: String,
 }
 
 impl AppEntry {
@@ -70,6 +74,7 @@ impl AppEntry {
             keywords,
             search_text,
             score: 0,
+            icon: String::new(),
         }
     }
 
@@ -85,6 +90,7 @@ impl AppEntry {
             keywords: String::new(),
             search_text,
             score: 0,
+            icon: String::new(),
         }
     }
 
@@ -100,6 +106,7 @@ impl AppEntry {
             keywords: String::new(),
             search_text,
             score: 0,
+            icon: String::new(),
         }
     }
 
@@ -116,6 +123,7 @@ impl AppEntry {
             keywords: String::new(),
             search_text,
             score: 0,
+            icon: String::new(),
         }
     }
 
@@ -132,7 +140,14 @@ impl AppEntry {
             keywords: String::new(),
             search_text,
             score: 0,
+            icon: String::new(),
         }
+    }
+
+    /// Attach a desktop `Icon=` name or path.
+    pub fn with_icon(mut self, icon: String) -> Self {
+        self.icon = icon;
+        self
     }
 }
 

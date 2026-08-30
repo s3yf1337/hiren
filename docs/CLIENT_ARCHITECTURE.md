@@ -77,22 +77,30 @@ State exposed to bindings (read-only):
 
 ```
 launcher.query                     String
-launcher.results                   [AppEntry { id, name, exec, description, keywords, mode, score }]
+launcher.results                   [AppEntry { id, name, exec, description, keywords, mode, score, icon }]
 launcher.results_count             usize
 launcher.selected_index            usize
-launcher.selected_result.name / .exec / .id / .description
+launcher.selected_result.name / .exec / .id / .description / .mode / .icon
 launcher.loading                   bool
+launcher.launching                 bool (true after activate; themes bind this for exit motion)
 window.width / window.height       u32 (logical)
 time                               f32 (seconds since start)
+hit                                f32 (1 → 0 after selection change / open)
+hit_type                           f32 (1 → 0 after query change)
+since_select / since_type          f32 (seconds since that event)
 pi, tau                            constants
 
 Repeater locals: index, count, is_selected, selected_index,
-                 item_name, item_exec, item_id, item_description, item_keywords
+                 item_name, item_exec, item_id, item_description, item_keywords,
+                 item_mode, item_icon (resolved icon path, empty if none)
 ```
 
 Helper functions available inside expressions:
 `min(a,b) max(a,b) abs(x) floor(x) ceil(x) round(x) sqrt(x) sin cos tan
-clamp(v,lo,hi)`, `text_width(text, font_size)` (measured — usable inside
+clamp(v,lo,hi)`, `mod(a,n)` (Euclidean remainder; `mod(-1, 5)` is `4`),
+`hash(n)` (deterministic `0..1`), `shake(amp, seed)` (select-impact
+offset), `type_shake(amp, seed)` (query-impact offset),
+`text_width(text, font_size)` (measured — usable inside
 arithmetic), `initial(text)` (first grapheme, for icon chips).
 
 ---
@@ -110,6 +118,7 @@ description = "Polished vertical launcher"
 width = 640            # exact size (logical px)
 # width/height may be omitted → falls back to config width/height
 transparent = true
+time_hz = 60           # optional; vsync for time-driven idle (default ~20 fps)
 layer = "overlay"      # layer-shell: background | bottom | top | overlay
 anchor = "center"      # layer-shell: center | top | bottom
 
@@ -190,11 +199,16 @@ animate = [{ property = "y", duration_ms = 420, easing = "spring" }]
 A property value is either a **literal** (`x = 32`, `text = "Firefox"`) or an
 **expression string** (`x = "window.width - 64"`). Expressions support:
 
-- arithmetic `+ - * /`, parentheses, `min/max/abs/floor/ceil/round/sqrt/sin/cos/clamp`
+- arithmetic `+ - * /`, parentheses, `min/max/abs/floor/ceil/round/sqrt/sin/cos/clamp/mod`
+- `hash(n)` → `0..1`; `shake(amp, seed)` / `type_shake(amp, seed)` — stepped
+  impact offsets gated on `hit` / `hit_type` (full slam, then 42 Hz chaos)
 - comparisons `== != < <= > >=`, boolean `&& || !`, ternary `cond ? a : b` (lazy —
   a ternary must be the whole expression; inside larger arithmetic, use `min`/`max`)
-- state paths (`launcher.*`, `window.*`, `time`), repeater locals
-- `text_width(text, size[, family])` — measured width, inlines into arithmetic
+- state paths (`launcher.*`, `window.*`, `time`, `hit`, `hit_type`, `since_select`,
+  `since_type`), repeater locals
+- `text_width(text, size[, family])` — measured width, inlines into arithmetic.
+  A comma-separated `family` (`'Anton, Archivo Black, Titan One'`) measures as
+  ransom type so plates sized to mixed-font names stay tight.
 
 ### Geometry & type primitives
 
@@ -205,15 +219,32 @@ A property value is either a **literal** (`x = 32`, `text = "Firefox"`) or an
   shape (stars, torn jags, slashes). `;`-separated `x,y` pairs in node-local
   coordinates, each coordinate a binding. Supports `background`/`fill`, `border`,
   `shadow` (hard offset for polygons), transforms and `on_click` (point-in-polygon).
-- Text styling: `font_family = "Antonio"` (system font via fontdb; falls back to
-  sans when missing), `outline = "3px #000000"` (comic outline, ring blits),
+  Recut (hard silhouette change, not vertex morph): stack several `Polygon` nodes
+  with different vertex counts and toggle `visible` with
+  `mod(launcher.selected_index, n) == i`. Invisible nodes are skipped entirely.
+  Event-driven impact (P5): `x = "20 + shake(14, 1)"`, `visible = "hit > 0.35"`
+  for slashes that only exist during the cut. Do not loop recut on `time`.
+- Text styling: `font_family = "Anton"` (system font **or** a TTF/OTF dropped in
+  `themes/<name>/fonts/` — loaded on start and hot-reload; falls back to sans
+  when missing), `outline = "3px #000000"` (comic outline, ring blits),
   `text_shadow = "3px 3px #000000"` (hard sticker offset under the outline),
-  `text_case = "upper"` (case-fold at layout time — P5 sets menus in caps).
+  `wrap = "none"` (single-line; default word-wraps to the node box — a search
+  query with a space otherwise drops the rest of the line),
+  `text_case = "upper"` (case-fold at layout time), `ransom = "true"` with
+  `ransom_fonts = "Anton, Archivo Black, Titan One"` (per-letter mix of family /
+  weight / size / rotation / case — the P5 cut-paper look; `text_width` with a
+  comma-separated family list uses the same mix).
+- `[window] time_hz = 60` — `time` bindings without a running spring normally
+  throttle to ~20 fps (caret blink). Sharp caret + impact frames (atlus) set 60.
 - String helpers in expressions: `upper(x)` / `lower(x)` alongside `initial(x)`;
   repeater locals include `item_mode` (`drun`/`run`/`calc`/`window`) for
   mode-tag columns.
-- Repeater prop `clip_pad = "80"` — widens the fixed scissor band horizontally so
+- Repeater prop `clip_pad = "160"` — widens the fixed scissor band horizontally so
   delegate chrome (tag chips hanging off rows, plate stacks) is not clipped.
+- Overlay themes: omit any full-window background node and `window.background` —
+  with `transparent = true` the compositor shows the desktop between elements,
+  so the surface reads as a shaped overlay instead of a window; give text its
+  own black `outline` to stay readable on any wallpaper.
 - `initial(text)` — first grapheme (icon chips)
 - color literals in props: `#rgb`, `#rrggbb`, `#rrggbbaa`, `rgb()/rgba()`, CSS names, `transparent`
 - `background = "linear-gradient(160deg, #1e1e2e, #181825)"` (CSS-style angle)
@@ -225,7 +256,8 @@ A property value is either a **literal** (`x = 32`, `text = "Firefox"`) or an
 
 - `vertical` — flowing list (`item_height` + `gap`)
 - `circular` — items placed on a ring: `angle = index/count * tau - pi/2`, `radius`
-- `row` — horizontal (delegates position themselves)
+- `row` — horizontal (delegates position themselves; scissored)
+- `free` — no automatic offset, no scissor (decorative scatter; delegates place themselves)
 
 **Virtualization** is built in: instances entirely outside the repeater's
 visible band are never materialized, and delegate output is scissored to the
@@ -271,7 +303,7 @@ characters, `Backspace`, `Escape` (close), `Enter` (activate),
 ## Animations
 
 Per-node `animate` array; component-level `animate` merges onto every delegate
-instance. Properties: `x`, `y`, `width`, `height`, `opacity`, `rotation`, `scale`.
+instance. Properties: `x`, `y`, `width`, `height`, `opacity`, `rotation`, `scale`, `skew`.
 
 ```toml
 animate = [
@@ -279,21 +311,35 @@ animate = [
   { property = "opacity", from = 0, duration_ms = 240, delay = "index * 30", easing = "ease_out_cubic" },
   { property = "x", from = "window.width + 60", duration_ms = 500, easing = "ease_out_quart" },
   { property = "scale", duration_ms = 420, easing = "spring", spring = { stiffness = 260, damping = 18, mass = 1 } },
+  { property = "scale", from = 1.18, duration_ms = 90, trigger = "select", easing = "ease_out_quad" },
 ]
 ```
 
 - `from` — enter-animation start value (number or expression), evaluated at layout
 - `delay` — fixed ms or a per-instance expression (`"index * 30"` stagger)
+- `trigger` — `"select"` or `"type"` replays `from` → target on that event
+  (default: first appearance only)
 - `easing` — `linear`, `ease_in/out/in_out_quad`, `…_cubic`, `ease_out_quart`,
   `ease_out_expo`, `ease_out_back`, `ease_out_elastic`, `spring`
 - `spring = { stiffness, damping, mass }` — real damped-oscillator integration
   (240 Hz fixed step, stateless), e.g. `170/22/1` default: slight overshoot
 
+**Impact (P5-style, not idle wobble).** `hit` is 1 on open and whenever
+`launcher.selected_index` changes, holds ~2 frames, then decays (~200 ms).
+`hit_type` does the same for query edits. `shake(amp, seed)` turns `hit` into a
+stepped bipolar offset (full-amplitude slam, then 42 Hz quantized chaos);
+layers with different `seed`s mis-register. Bind `visible = "hit > 0.35"` for
+slashes that only exist during the cut. The window loop ticks while `hit` is
+live if the theme binds any of these; otherwise selection does not keep a
+theme in motion.
+
 Implementation: `AnimationState` tracks one motion per `node-id:property`;
 retargeting starts a transition from the current interpolated value. Frame
 pacing: the layer-shell loop presents on the compositor's `wl_surface.frame`
 vsync callback (no busy rendering); time-driven themes with nothing else in
-motion (caret blink) are throttled to ~20 fps; idle cost is zero (poll blocks).
+motion throttle to ~20 fps unless `[window] time_hz` is set (atlus uses 60 for
+caret + impact frames); idle cost is zero when the theme does not bind `time`
+and no impulse is decaying.
 
 ---
 
@@ -408,7 +454,7 @@ hiren-client/
 │       ├── color.rs          # color parsing
 │       └── state_bridge.rs   # SearchBridge (modes → ObservableState)
 └── themes/
-    ├── default/  atlus/  macos/  layered/  circular/   # one theme.toml each
+    ├── default/  atlus/  macos/  layered/  circular/   # theme.toml (+ atlus/fonts)
 ```
 
 User themes: `~/.config/hiren/themes/<name>/theme.toml`, selected via

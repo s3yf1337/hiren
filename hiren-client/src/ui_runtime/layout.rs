@@ -9,7 +9,7 @@
 //!   * parse `on_click` actions with per-instance locals
 //!   * bake per-instance animation delays (stagger) into nodes
 
-use super::binding::{eval_bool, eval_f32, eval_str, EvalContext, SharedDiag, Measurer};
+use super::binding::{eval_bool, eval_f32, eval_str, EvalContext, SharedDiag, Measurer, Impulse};
 use super::node::{NodeAction, ResolvedNode};
 use super::theme::{Theme, NodeDef, AnimateDef};
 use crate::launcher::LauncherState;
@@ -20,6 +20,9 @@ pub struct ResolveOutput {
     /// True when any geometry binding references `time` — the caller should
     /// keep producing frames for continuous animation.
     pub uses_time: bool,
+    /// True when the theme binds `hit` / `shake` / `since_select` (or type
+    /// variants). Combined with a live impulse, the window loop keeps ticking.
+    pub uses_impulse: bool,
 }
 
 pub fn resolve(
@@ -30,8 +33,25 @@ pub fn resolve(
     measure: Option<Measurer>,
     diag: Option<SharedDiag>,
 ) -> ResolveOutput {
-    let uses_time = theme_uses_time(theme);
+    resolve_with(theme, state, window_size, time, Impulse::default(), measure, diag)
+}
+
+pub fn resolve_with(
+    theme: &Theme,
+    state: &LauncherState,
+    window_size: (u32, u32),
+    time: f32,
+    impulse: Impulse,
+    measure: Option<Measurer>,
+    diag: Option<SharedDiag>,
+) -> ResolveOutput {
+    let uses_time = theme_uses_token(theme, &["time"]);
+    let uses_impulse = theme_uses_token(
+        theme,
+        &["hit", "hit_type", "since_select", "since_type", "shake", "type_shake"],
+    );
     let mut ctx = EvalContext::new(state, window_size, time);
+    ctx.impulse = impulse;
     ctx.measure = measure;
     ctx.diag = diag;
     let mut out = Vec::new();
@@ -40,30 +60,36 @@ pub fn resolve(
     }
     // Stable sort by z keeps document order within a layer.
     out.sort_by_key(|n| n.z);
-    ResolveOutput { nodes: out, uses_time }
+    ResolveOutput { nodes: out, uses_time, uses_impulse }
 }
 
-/// Cheap scan: does any geometry/visual binding mention `time`?
-fn theme_uses_time(theme: &Theme) -> bool {
-    fn expr_uses_time(e: &str) -> bool {
+/// Cheap scan: does any geometry/visual binding mention one of `tokens`?
+pub(crate) fn theme_uses_token(theme: &Theme, tokens: &[&str]) -> bool {
+    fn expr_uses(e: &str, tokens: &[&str]) -> bool {
         e.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-            .any(|t| t == "time")
+            .any(|t| tokens.contains(&t))
     }
-    fn node_uses_time(n: &NodeDef) -> bool {
-        let prop_hit = n.props.values().any(|v| expr_uses_time(v));
-        let points_hit = n.points.as_deref().map(expr_uses_time).unwrap_or(false);
-        let child_hit = n.children.iter().any(node_uses_time);
+    fn node_uses(n: &NodeDef, tokens: &[&str]) -> bool {
+        let prop_hit = n.props.values().any(|v| expr_uses(v, tokens));
+        let points_hit = n.points.as_deref().map(|e| expr_uses(e, tokens)).unwrap_or(false);
+        let child_hit = n.children.iter().any(|c| node_uses(c, tokens));
         let anim_hit = n.animate.iter().any(|a| {
-            matches!(&a.delay, Some(super::theme::DelaySpec::Expr(e)) if expr_uses_time(e))
-                || matches!(&a.from, Some(super::theme::FromSpec::Expr(e)) if expr_uses_time(e))
+            matches!(&a.delay, Some(super::theme::DelaySpec::Expr(e)) if expr_uses(e, tokens))
+                || matches!(&a.from, Some(super::theme::FromSpec::Expr(e)) if expr_uses(e, tokens))
         });
         [&n.x, &n.y, &n.width, &n.height, &n.visible, &n.opacity, &n.rotation, &n.skew, &n.scale]
             .iter()
-            .any(|f| f.as_deref().map(expr_uses_time).unwrap_or(false))
+            .any(|f| f.as_deref().map(|e| expr_uses(e, tokens)).unwrap_or(false))
             || prop_hit || points_hit || child_hit || anim_hit
     }
-    theme.nodes.iter().any(node_uses_time)
-        || theme.components.values().flat_map(|c| &c.nodes).any(node_uses_time)
+    theme.nodes.iter().any(|n| node_uses(n, tokens))
+        || theme.components.values().flat_map(|c| &c.nodes).any(|n| node_uses(n, tokens))
+        || theme.components.values().any(|c| {
+            c.animate.iter().any(|a| {
+                matches!(&a.delay, Some(super::theme::DelaySpec::Expr(e)) if expr_uses(e, tokens))
+                    || matches!(&a.from, Some(super::theme::FromSpec::Expr(e)) if expr_uses(e, tokens))
+            })
+        })
 }
 
 /// Resolve one node (and its children / expansions) into `out`.
@@ -174,7 +200,7 @@ fn resolve_node(
 }
 
 /// `text_case = "upper" | "lower"` — case-fold the resolved text at layout
-/// time (P5 sets its menus in caps; Antonio only shines uppercase).
+/// time (P5 sets its menus in caps; condensed grotesques read in uppercase).
 fn apply_text_case(text: &str, props: &HashMap<String, String>) -> String {
     match props.get("text_case").map(|s| s.as_str()) {
         Some("upper") => text.to_uppercase(),
@@ -200,7 +226,7 @@ fn parse_points(raw: &str, ctx: &mut EvalContext) -> Vec<(f32, f32)> {
             if pair.is_empty() {
                 return None;
             }
-            let (xs, ys) = pair.split_once(',')?;
+            let (xs, ys) = split_xy(pair)?;
             let x = eval_f32(xs.trim(), ctx, f32::NAN);
             let y = eval_f32(ys.trim(), ctx, f32::NAN);
             if x.is_finite() && y.is_finite() {
@@ -210,6 +236,30 @@ fn parse_points(raw: &str, ctx: &mut EvalContext) -> Vec<(f32, f32)> {
             }
         })
         .collect()
+}
+
+/// Split `x,y` on the first comma that is not inside quotes or parentheses,
+/// so `text_width(a, 32, 'Anton, Oswald') + 8, 12` is one pair.
+fn split_xy(pair: &str) -> Option<(&str, &str)> {
+    let bytes = pair.as_bytes();
+    let mut depth = 0i32;
+    let mut quote: Option<u8> = None;
+    for (i, &c) in bytes.iter().enumerate() {
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            b'\'' | b'"' => quote = Some(c),
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            b',' if depth == 0 => return Some((pair[..i].trim(), pair[i + 1..].trim())),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Bake per-instance animation values: resolve `delay` expressions into
@@ -285,7 +335,7 @@ fn resolve_repeater(
         .props
         .get("window")
         .map(|e| eval_f32(e, ctx, 0.0))
-        .unwrap_or(if use_results && layout != "vertical" { 9.0 } else { 0.0 }) as usize;
+        .unwrap_or(if use_results && layout != "vertical" && layout != "free" { 9.0 } else { 0.0 }) as usize;
     // Visible list height (viewport for virtualization). Defaults to "rest of
     // the window" so themes only opt in when they care about the exact clip.
     let view_h = def
@@ -332,7 +382,7 @@ fn resolve_repeater(
                     continue;
                 }
             }
-            "circular" | "row" => {
+            "circular" | "row" | "free" => {
                 if !in_selection_window(idx) {
                     continue;
                 }
@@ -354,6 +404,7 @@ fn resolve_repeater(
             locals.insert("item_description".into(), it.description.clone().unwrap_or_default());
             locals.insert("item_keywords".into(), it.keywords.clone());
             locals.insert("item_mode".into(), format!("{:?}", it.mode).to_lowercase());
+            locals.insert("item_icon".into(), super::icon::resolve(&it.icon));
         }
         let mut item_ctx = ctx.clone();
         item_ctx.locals = locals;
@@ -365,7 +416,7 @@ fn resolve_repeater(
                 let angle = (idx as f32 / count as f32) * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
                 (angle.cos() * radius, angle.sin() * radius)
             }
-            "row" => (0.0, 0.0), // row spacing resolved by delegates; kept free
+            "row" | "free" => (0.0, 0.0), // delegates place themselves
             _ => (0.0, idx as f32 * (item_h + gap)), // vertical
         };
 
@@ -376,7 +427,7 @@ fn resolve_repeater(
         let clip = match layout {
             "vertical" => Some((origin_x - clip_pad, clip_y - 0.5, view_w + clip_pad * 2.0, view_h + 1.0)),
             "row" => Some((origin_x, clip_y - 0.5, view_w, item_h + 1.0)),
-            _ => None,
+            _ => None, // circular + free: no scissor
         };
         for delegate_node in &comp.nodes {
             resolve_delegate_node_with_component(delegate_node, &mut item_ctx, origin_x + off_x, origin_y + off_y, &suffix, idx, &comp.animate, clip, out);
@@ -522,7 +573,7 @@ mod tests {
     }
 
     fn theme_from(toml: &str) -> Theme {
-        let mut t: Theme = toml::from_str(toml).unwrap();
+        let t: Theme = toml::from_str(toml).unwrap();
         t.validate().unwrap();
         t
     }
@@ -745,36 +796,191 @@ mod tests {
         );
         let out = resolve(&t, &state(0, 0), (400, 300), 0.0, None, None);
         assert!(out.uses_time);
+        assert!(!out.uses_impulse);
+    }
+
+    #[test]
+    fn uses_impulse_detection() {
+        let t = theme_from(
+            r#"
+            [[nodes]]
+            id = "slam"
+            type = "Rectangle"
+            x = "20 + shake(12, 1)"
+            y = "0"
+            width = "10"
+            height = "10"
+            "#,
+        );
+        let out = resolve(&t, &state(0, 0), (400, 300), 0.0, None, None);
+        assert!(out.uses_impulse);
+        assert!(!out.uses_time);
+        assert_eq!(out.nodes[0].x, 20.0, "hit defaults to 0 so shake is a no-op");
     }
 }
 
 #[cfg(test)]
-mod font_tests {
+mod atlus_theme_tests {
     use super::*;
+    use crate::launcher::{LauncherState, ObservableState};
+    use crate::ui_runtime::theme::Theme;
 
-    #[test]
-    fn atlus_font_family_resolves() {
+    fn load() -> (Theme, impl Fn(&str, f32, &str) -> f32) {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("themes/atlus/theme.toml");
         let t = Theme::load_from_file(&path).expect("load atlus");
+        let engine = crate::ui_runtime::text::TextEngine::new();
+        engine.load_fonts_from_dir(path.parent().unwrap());
+        let meas = move |t: &str, size: f32, family: &str| engine.measure(t, size, cosmic_text::Weight::NORMAL, family);
+        (t, meas)
+    }
+
+    fn demo(n: usize, sel: usize) -> LauncherState {
         let mut s = LauncherState::new();
-        let entries: Vec<hiren_shared::AppEntry> = (0..5)
-            .map(|i| hiren_shared::AppEntry::run(format!("id{i}"), format!("App{i}"), format!("app{i}")))
-            .collect();
-        s.set_results(entries);
-        let out = resolve(&t, &s, (860, 560), 0.0, None, None);
-        let wm = out.nodes.iter().find(|n| n.id == "wm_h").expect("wm_h");
-        assert_eq!(wm.props.get("font_family").map(|s| s.as_str()), Some("Antonio"));
-        let bar_sel = out.nodes.iter().find(|n| n.id == "row_bar-0").expect("row0");
-        assert_eq!(bar_sel.props.get("background").map(|s| s.as_str()), Some("#E60012"), "row 0 is selected");
-        assert_eq!(bar_sel.scale, 1.05, "selection pop target");
-        let bar = out.nodes.iter().find(|n| n.id == "row_bar-1").expect("row1");
-        assert_eq!(bar.props.get("background").map(|s| s.as_str()), Some("#FFFFFF"));
-        assert_eq!(bar.skew, -16.0);
-        let star = out.nodes.iter().find(|n| n.id == "mass_star").expect("star");
-        assert_eq!(star.points.len(), 8, "polygon points parsed");
-        let tab = out.nodes.iter().find(|n| n.id == "mode_tab_text-2").expect("tab2");
-        assert_eq!(tab.text.as_deref(), Some("CMD"), "run mode maps to CMD tab");
-        let name = out.nodes.iter().find(|n| n.id == "row_name-1").expect("name1");
-        assert_eq!(name.text.as_deref(), Some("APP1"), "text_case upper applied");
+        s.set_results(
+            (0..n)
+                .map(|i| hiren_shared::AppEntry::run(format!("id{i}"), format!("App{i}"), format!("app{i}")))
+                .collect(),
+        );
+        s.selected_index = sel;
+        s
+    }
+
+    #[test]
+    fn atlus_is_an_editorial_overlay_not_a_card() {
+        let (t, meas) = load();
+        assert_eq!(t.window.time_hz, Some(60));
+        assert!(t.window.transparent);
+        assert!(theme_uses_token(&t, &["launching"]), "exit motion binds launching");
+        let out = resolve(&t, &demo(5, 0), (1080, 640), 0.5, Some(&meas), None);
+        assert!(out.uses_impulse, "selection impact");
+        assert!(out.uses_time, "caret binds time");
+        assert!(out.nodes.iter().any(|n| n.id == "cream_page" && n.points.len() >= 6));
+        assert!(out.nodes.iter().any(|n| n.id == "navy_field" && n.points.len() >= 6));
+        assert!(out.nodes.iter().any(|n| n.id == "selector" && n.points.len() >= 4));
+        let cream = out.nodes.iter().find(|n| n.id == "cream_page").unwrap();
+        let navy = out.nodes.iter().find(|n| n.id == "navy_field").unwrap();
+        let cream_left = cream.x + cream.points.iter().map(|(x, _)| *x).fold(f32::MAX, f32::min);
+        let cream_right = cream.x + cream.points.iter().map(|(x, _)| *x).fold(f32::MIN, f32::max);
+        let navy_left = navy.x + navy.points.iter().map(|(x, _)| *x).fold(f32::MAX, f32::min);
+        let navy_right = navy.x + navy.points.iter().map(|(x, _)| *x).fold(f32::MIN, f32::max);
+        assert!(cream_right > navy_left + 80.0, "plates overlap (cream_r={cream_right} navy_l={navy_left})");
+        assert!(cream_left > 12.0, "cream inset from the left, x0={cream_left}");
+        assert!(navy_right < 1070.0, "navy recedes from the right, x1={navy_right}");
+        let plate = out.nodes.iter().find(|n| n.id == "archive_plate").unwrap();
+        let plate_right = plate.x + plate.points.iter().map(|(x, _)| *x).fold(0.0f32, f32::max);
+        assert!(plate_right < 1072.0, "dossier fully in frame, right={plate_right}");
+        assert!(plate_right < navy_right + 8.0, "dossier sits on the navy plate");
+        let full_round = out.nodes.iter().any(|n| {
+            n.kind == "Rectangle"
+                && n.x.abs() < 1.0
+                && n.y.abs() < 1.0
+                && (n.width - 1080.0).abs() < 2.0
+                && (n.height - 640.0).abs() < 2.0
+                && n.radius > 8.0
+        });
+        assert!(!full_round, "must not be a centered rounded window card");
+        let title = out.nodes.iter().find(|n| n.id == "title").expect("title");
+        assert!(title.text.as_deref().unwrap_or("").contains("HIR"));
+        let inquire = out.nodes.iter().find(|n| n.id == "inquire").expect("inquire");
+        assert_eq!(inquire.text.as_deref(), Some("INQUIRE"));
+        assert!(inquire.radius < 1.0, "search is a labeled rule, not a rounded input");
+        assert!(out.nodes.iter().all(|n| n.id != "search_ph"), "no meme caption in the inquire field");
+    }
+
+    #[test]
+    fn atlus_selector_is_independent_and_selection_moves_the_composition() {
+        let (t, meas) = load();
+        let a = resolve(&t, &demo(6, 0), (1080, 640), 1.0, Some(&meas), None);
+        let b = resolve(&t, &demo(6, 2), (1080, 640), 1.0, Some(&meas), None);
+        let sel_a = a.nodes.iter().find(|n| n.id == "selector").unwrap();
+        let sel_b = b.nodes.iter().find(|n| n.id == "selector").unwrap();
+        assert!(sel_a.height > 70.0, "selector is larger than a row");
+        assert!(sel_b.y - sel_a.y > 80.0, "selector travels with selection ({} -> {})", sel_a.y, sel_b.y);
+        let name0 = a.nodes.iter().find(|n| n.id == "row_name-0").unwrap();
+        let name1 = a.nodes.iter().find(|n| n.id == "row_name-1").unwrap();
+        assert!(name0.x > name1.x, "selected row steps forward of its neighbours ({} vs {})", name0.x, name1.x);
+        let dossier_a = a.nodes.iter().find(|n| n.id == "archive_name").unwrap();
+        let dossier_b = b.nodes.iter().find(|n| n.id == "archive_name").unwrap();
+        assert_eq!(dossier_a.text.as_deref(), Some("App0"));
+        assert_eq!(dossier_b.text.as_deref(), Some("App2"));
+        let num_b = b.nodes.iter().find(|n| n.id == "bg_num").unwrap();
+        assert_eq!(num_b.text.as_deref(), Some("3"));
+        let bg_a = a.nodes.iter().find(|n| n.id == "bg_archive").unwrap();
+        let bg_b = b.nodes.iter().find(|n| n.id == "bg_archive").unwrap();
+        assert!((bg_b.x - bg_a.x).abs() > 1.0, "background type reacts to selection");
+    }
+
+    #[test]
+    fn atlus_empty_hides_dossier_and_shows_stamp() {
+        let (t, meas) = load();
+        let mut s = LauncherState::new();
+        s.query = "zzz".into();
+        let out = resolve(&t, &s, (1080, 640), 0.5, Some(&meas), None);
+        assert!(out.nodes.iter().any(|n| n.id == "empty_stamp"));
+        assert!(out.nodes.iter().all(|n| n.id != "archive_name"));
+        assert!(out.nodes.iter().all(|n| n.id != "selector"));
+    }
+
+    #[test]
+    fn atlus_select_impact_offsets_planes() {
+        let (t, meas) = load();
+        let s = demo(5, 0);
+        let rest = resolve(&t, &s, (1080, 640), 0.0, Some(&meas), None);
+        let mut slam = crate::ui_runtime::binding::Impulse::default();
+        slam.hit = 1.0;
+        slam.since_select = 0.0;
+        let hit = resolve_with(&t, &s, (1080, 640), 0.0, slam, Some(&meas), None);
+        let cream_r = rest.nodes.iter().find(|n| n.id == "cream_page").unwrap();
+        let cream_h = hit.nodes.iter().find(|n| n.id == "cream_page").unwrap();
+        assert!((cream_h.x - cream_r.x).abs() > 2.0, "select slams the manuscript page");
+        assert!(hit.nodes.iter().all(|n| n.id != "hit_slash"), "no full-window slash on select");
+        assert!(rest.nodes.iter().all(|n| n.id != "hit_slash"));
+    }
+
+    #[test]
+    fn atlus_runtime_settles_and_writes_png() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("themes/atlus/theme.toml");
+        let theme = Theme::load_from_file(&path).expect("load atlus");
+        let state = ObservableState::new(LauncherState::new());
+        state.update(|s| {
+            s.query = "f".into();
+            s.set_results(vec![
+                hiren_shared::AppEntry::drun(
+                    "firefox".into(),
+                    "Firefox".into(),
+                    "firefox".into(),
+                    Some("Browse the Web".into()),
+                    "web".into(),
+                ),
+                hiren_shared::AppEntry::run("foot".into(), "Foot terminal".into(), "foot".into()),
+                hiren_shared::AppEntry::run("code".into(), "Visual Studio Code".into(), "code".into()),
+            ]);
+            s.selected_index = 0;
+        });
+        let mut rt = crate::ui_runtime::UiRuntime::new(theme, state.clone());
+        let size = (1080u32, 640u32);
+        let _ = rt.resolve(size);
+        std::thread::sleep(std::time::Duration::from_millis(450));
+        let rest = rt.resolve(size);
+        let cream = rest.nodes.iter().find(|n| n.id == "cream_page").expect("cream");
+        assert!(cream.opacity > 0.9, "manuscript settled opaque, o={}", cream.opacity);
+        let row = rest.nodes.iter().find(|n| n.id == "row_name-0").expect("row");
+        assert!(row.opacity > 0.5, "results must remain readable, o={}", row.opacity);
+        assert!(row.x > 80.0, "selected name sits on the cascade, x={}", row.x);
+        let plate = rest.nodes.iter().find(|n| n.id == "archive_plate").expect("plate");
+        assert!(plate.x < 900.0, "dossier plate must settle on-screen, x={}", plate.x);
+        let plate_right = plate.x + plate.points.iter().map(|(x, _)| *x).fold(0.0f32, f32::max);
+        assert!(plate_right < 1072.0, "dossier fully in frame after settle, right={plate_right}");
+        let query = rest.nodes.iter().find(|n| n.id == "search_text").expect("query");
+        assert_eq!(query.text.as_deref(), Some("f"));
+        let png = rt.render_nodes(&rest.nodes, size, 1.0);
+        std::fs::write("/tmp/hiren-atlus-rest.png", png.encode_png().expect("png")).ok();
+        state.update(|s| s.selected_index = 1);
+        let slam = rt.resolve(size);
+        assert!(slam.nodes.iter().any(|n| n.id == "selector"));
+        let dossier = slam.nodes.iter().find(|n| n.id == "archive_name").unwrap();
+        assert_eq!(dossier.text.as_deref(), Some("Foot terminal"));
+        let slam_png = rt.render_nodes(&slam.nodes, size, 1.0);
+        std::fs::write("/tmp/hiren-atlus-slam.png", slam_png.encode_png().expect("png")).ok();
     }
 }
