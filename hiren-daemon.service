@@ -3,10 +3,24 @@ Description=hiren application launcher daemon
 Documentation=https://github.com/s3yf1337/hiren
 
 [Service]
+# The daemon listens on a per-user UNIX socket at
+# $XDG_RUNTIME_DIR/hiren.socket (mode 0600, peer credentials checked,
+# single instance). XDG_RUNTIME_DIR is private to the user session and is
+# what the unit inherits from the systemd --user manager.
+#
+# PrivateTmp is deliberately NOT enabled: a private /tmp namespace would
+# hide sockets and state from hiren-client processes outside this unit, and
+# the launcher protocol must stay reachable across the session.
 Type=simple
 ExecStart=@BINDIR@/hiren-daemon
 Restart=on-failure
 RestartSec=2
+
+# The daemon only needs its UNIX socket and read access to desktop files.
+UMask=0077
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+LimitNOFILE=1024
 
 [Install]
 WantedBy=default.target
