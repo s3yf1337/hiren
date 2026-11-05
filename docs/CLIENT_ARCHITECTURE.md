@@ -149,10 +149,12 @@ to stderr and stored in `launcher.error` so a theme can surface them.
 
 A theme is a directory with `theme.toml` (plus optional `assets/`, `fonts/`,
 and any other runtime data). The schema is strict: unknown fields and
-wrong-typed values produce a warning or a load error, window dimensions must be
-positive, spring parameters are validated, and static `font_size` literals must
-be in `0.5..=4096` (dynamic sizes are clamped at render time). The bundled
-themes all pass `--validate-themes`; run it after editing a theme.
+wrong-typed values produce a load error, window dimensions must be in
+`1..=16384`, `time_hz` in `1..=1000`, spring parameters are validated, and
+static `font_size` literals must be in `0.5..=4096` (dynamic sizes are clamped
+at render time). Unknown node types/props and layer/anchor typos are warned
+about. The bundled themes all pass `--validate-themes`; run it after editing a
+theme.
 
 ```toml
 [meta]
@@ -160,10 +162,10 @@ name = "default"
 description = "Polished vertical launcher"
 
 [window]
-width = 640            # exact size (logical px); must be positive
+width = 640            # exact size (logical px); valid range 1..=16384
 # width/height may be omitted → falls back to config width/height
 transparent = true
-time_hz = 60           # optional; vsync for time-driven idle (default ~20 fps)
+time_hz = 60           # optional; 1..=1000, vsync for time-driven idle (default ~20 fps)
 layer = "overlay"      # layer-shell: background | bottom | top | overlay
 anchor = "center"      # layer-shell: center | top | bottom
 
@@ -383,9 +385,10 @@ animate = [
   `ease_out_expo`, `ease_out_back`, `ease_out_elastic`, `spring`
 - `spring = { stiffness, damping, mass }` — real damped-oscillator integration
   (240 Hz fixed step, stateless), e.g. `170/22/1` default: slight overshoot.
-  All three values must be positive and are validated at load time. Delayed
-  springs are honored: `delay`/`delay_ms` waits before the spring starts
-  integrating, rather than being dropped for spring motion.
+  Validation requires finite `mass > 0` and finite `damping >= 0`,
+  `stiffness >= 0`. Delayed springs are honored: `delay`/`delay_ms` waits
+  before the spring starts integrating, rather than being dropped for spring
+  motion.
 
 **Impact (P5-style, not idle wobble).** `hit` is 1 on open and whenever
 `launcher.selected_index` changes, holds ~2 frames, then decays (~200 ms).
