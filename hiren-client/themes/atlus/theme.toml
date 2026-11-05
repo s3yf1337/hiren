@@ -273,7 +273,7 @@ id = "search_rule"
 type = "Rectangle"
 x = "52"
 y = "156"
-width = "launcher.query == '' ? 168 : min(text_width(launcher.query, 28, 'Playfair Display Black') + 36, 500)"
+width = "launcher.query == '' ? 168 : min(text_width(launcher.query, 28, 'Playfair Display Black', 900) + 36, 500)"
 height = "3"
 props = { background = "#C5A35A" }
 z = 12
@@ -287,7 +287,7 @@ id = "search_rule_red"
 type = "Rectangle"
 x = "52"
 y = "161"
-width = "launcher.query == '' ? 48 : min(text_width(launcher.query, 28, 'Playfair Display Black') * 0.35, 180)"
+width = "launcher.query == '' ? 48 : min(text_width(launcher.query, 28, 'Playfair Display Black', 900) * 0.35, 180)"
 height = "2"
 props = { background = "#C41E3A" }
 z = 12
@@ -311,7 +311,7 @@ opacity = "(1 - launcher.launching) * (0.15 + 0.85 * max(0, sin(time * 5)))"
 [[nodes]]
 id = "caret_typed"
 type = "Rectangle"
-x = "52 + text_width(launcher.query, 28, 'Playfair Display Black') + 4 + type_shake(4, 8)"
+x = "52 + text_width(launcher.query, 28, 'Playfair Display Black', 900) + 4 + type_shake(4, 8)"
 y = "110"
 width = "3"
 height = "36"
