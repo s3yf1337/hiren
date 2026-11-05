@@ -1,10 +1,16 @@
 //! Режим drun — поиск и запуск .desktop-приложений через IPC-демон.
 
-use super::{exec_detached, SearchMode, SearchResult};
+use super::{entry_requests_terminal, plan_launch, spawn_monitored, LaunchErrors, SearchMode, SearchResult};
 use crate::config::LauncherConfig as Config;
 use hiren_shared::AppEntry;
 
 pub struct DrunMode;
+
+impl Default for DrunMode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl DrunMode {
     pub fn new() -> Self {
@@ -26,14 +32,21 @@ impl SearchMode for DrunMode {
                     .collect();
                 SearchResult::Entries(apps)
             }
-            Err(e) => {
-                SearchResult::Error(format!("IPC error: {e:#}"))
-            }
+            Err(e) => SearchResult::Error(format!("IPC error: {e:#}")),
         }
     }
 
-    fn execute(&self, entry: &AppEntry, _config: &Config) {
-        let exec = &entry.exec;
-        exec_detached(exec);
+    fn execute(&self, entry: &AppEntry, config: &Config) {
+        if let Err(e) = self.execute_with(entry, config, &super::new_launch_errors()) {
+            log::warn!("hiren: cannot launch {}: {e}", entry.name);
+        }
+    }
+
+    fn execute_with(&self, entry: &AppEntry, config: &Config, errors: &LaunchErrors) -> Result<(), String> {
+        // Exec из .desktop запускается напрямую (без sh -c): field-коды уже
+        // вырезаны демоном, а shell-интерпретация ломала бы кавычки/спецсимволы.
+        let terminal = entry_requests_terminal(entry).then_some(&config.terminal);
+        let plan = plan_launch(&entry.exec, terminal, None)?;
+        spawn_monitored(&plan, &entry.name, errors)
     }
 }
