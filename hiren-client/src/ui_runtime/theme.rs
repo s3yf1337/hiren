@@ -182,6 +182,15 @@ pub struct ComponentDef {
 // Loading
 // ---------------------------------------------------------------------------
 
+/// Walk a node tree depth-first (top-level nodes, component root nodes and
+/// their inline children).
+fn walk_nodes<'a>(node: &'a NodeDef, f: &mut impl FnMut(&'a NodeDef)) {
+    f(node);
+    for child in &node.children {
+        walk_nodes(child, f);
+    }
+}
+
 impl Theme {
     pub fn load_from_file(path: &Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path).with_context(|| format!("read theme {}", path.display()))?;
@@ -211,6 +220,34 @@ impl Theme {
             if !ids.insert(n.id.clone()) {
                 anyhow::bail!("Duplicate node id: {}", n.id);
             }
+        }
+        // Reject absurd literals early: font_size=0 panics cosmic-text and
+        // negative sizes wedge shaping (runtime entry points clamp, but a bad
+        // literal should surface in --validate-themes instead of silently
+        // rendering at a different size than authored).
+        let mut font_err: Option<String> = None;
+        for n in std::iter::once(&self.nodes[..])
+            .chain(self.components.values().map(|c| &c.nodes[..]))
+            .flatten()
+        {
+            walk_nodes(n, &mut |node| {
+                if font_err.is_some() {
+                    return;
+                }
+                if let Some(raw) = node.props.get("font_size") {
+                    if let Ok(size) = raw.trim().parse::<f32>() {
+                        if !size.is_finite() || !(0.5..=4096.0).contains(&size) {
+                            font_err = Some(format!(
+                                "Node '{}': font_size {} is out of range (0.5..=4096)",
+                                node.id, size
+                            ));
+                        }
+                    }
+                }
+            });
+        }
+        if let Some(err) = font_err {
+            anyhow::bail!("{err}");
         }
         // check repeater delegates exist
         for n in &self.nodes {
@@ -273,4 +310,63 @@ impl Theme {
 
 impl Default for Theme {
     fn default() -> Self { Self::fallback() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn theme_with(raw: &str) -> Theme {
+        toml::from_str(raw).expect("theme parses")
+    }
+
+    #[test]
+    fn bundled_themes_validate() {
+        let dirs = ["default", "atlus", "circular", "layered", "macos"];
+        for name in dirs {
+            let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("themes")
+                .join(name)
+                .join("theme.toml");
+            let theme = Theme::load_from_file(&path)
+                .unwrap_or_else(|e| panic!("bundled theme {name} must load: {e:#}"));
+            assert_eq!(theme.meta.name.is_empty(), false, "{name}: meta.name");
+        }
+    }
+
+    #[test]
+    fn zero_font_size_literal_is_rejected() {
+        let t = theme_with(r#"
+            [[nodes]]
+            id = "t"
+            type = "Text"
+            props = { font_size = "0" }
+        "#);
+        let err = t.validate().expect_err("font_size=0 must be rejected");
+        assert!(err.to_string().contains("font_size"), "{err}");
+    }
+
+    #[test]
+    fn negative_and_huge_font_size_literals_are_rejected() {
+        for bad in ["-8", "99999"] {
+            let t = theme_with(&format!(r#"
+                [[nodes]]
+                id = "t"
+                type = "Text"
+                props = {{ font_size = "{bad}" }}
+            "#));
+            assert!(t.validate().is_err(), "font_size {bad} must be rejected");
+        }
+    }
+
+    #[test]
+    fn binding_font_size_is_left_to_runtime_clamp() {
+        let t = theme_with(r#"
+            [[nodes]]
+            id = "t"
+            type = "Text"
+            props = { font_size = "launcher.loading ? 0 : 15" }
+        "#);
+        assert!(t.validate().is_ok(), "dynamic sizes are clamped at runtime, not statically rejected");
+    }
 }

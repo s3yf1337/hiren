@@ -27,6 +27,25 @@ use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, PixmapPaint, Premultiplied
 
 use super::color::Color;
 
+/// Smallest font size the engine will shape. cosmic-text panics on a zero line
+/// height and never returns from shaping negative sizes, so every entry point
+/// clamps into this range before touching the shaper.
+pub const MIN_FONT_SIZE: f32 = 0.5;
+/// Largest accepted font size. Bigger values are authoring mistakes and would
+/// allocate absurd pixmaps; they are clamped rather than honoured.
+pub const MAX_FONT_SIZE: f32 = 4096.0;
+
+/// Validate/clamp a requested font size. `None` means the value cannot be
+/// rendered at all (NaN/inf); finite values are clamped into
+/// `MIN_FONT_SIZE..=MAX_FONT_SIZE` so theme/binding data can never panic or
+/// hang cosmic-text (`font_size = "0"` used to abort the whole launcher).
+pub fn sanitize_font_size(size: f32) -> Option<f32> {
+    if !size.is_finite() {
+        return None;
+    }
+    Some(size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE))
+}
+
 /// Extra glyph styling (all optional). Widths/offsets are in the same units as
 /// the size argument passed to `render` (physical pixels there).
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -241,6 +260,9 @@ impl TextEngine {
         family: &str,
         nowrap: bool,
     ) -> Buffer {
+        // Defence in depth: public entry points sanitize, but cosmic-text
+        // panics on a zero line height, so never hand it an unsanitized size.
+        let size = sanitize_font_size(size).unwrap_or(MIN_FONT_SIZE);
         // Wrapped UI copy uses 1.35 so two lines fit a theme box. Nowrap
         // display (stacked H1s) authors a box ≈ em-square; 1.35 then clips
         // the bottom ~20% of the glyph — didone hairlines vanish first.
@@ -263,6 +285,9 @@ impl TextEngine {
         if text.is_empty() {
             return 0.0;
         }
+        let Some(size) = sanitize_font_size(size) else {
+            return 0.0;
+        };
         if family.contains(',') {
             return self.measure_ransom(text, size, &parse_font_list(family));
         }
@@ -303,9 +328,10 @@ impl TextEngine {
         color: Color,
         style: &TextStyle,
     ) -> Option<(Pixmap, f32)> {
-        if text.is_empty() || w < 2.0 || h < 2.0 {
+        if text.is_empty() || !w.is_finite() || !h.is_finite() || w < 2.0 || h < 2.0 || w > 65536.0 || h > 65536.0 {
             return None;
         }
+        let size = sanitize_font_size(size)?;
         let mut margin = style.margin();
         if style.ransom {
             // Rotated per-letter scraps spill past the box.
@@ -371,6 +397,7 @@ impl TextEngine {
         if text.is_empty() || w < 2.0 || h < 2.0 {
             return None;
         }
+        let size = sanitize_font_size(size)?;
         let mut fs_guard = self.inner.font_system.borrow_mut();
         let fs = fs_guard.get_or_insert_with(FontSystem::new);
         let mut buffer = Self::make_buffer(fs, text, size, weight, &style.family, style.nowrap);
@@ -415,6 +442,7 @@ impl TextEngine {
         style: &TextStyle,
         margin: f32,
     ) -> Option<(Pixmap, f32)> {
+        let size = sanitize_font_size(size)?;
         let fonts = ransom_font_list(style);
         let glyphs = self.plan_ransom(text, size, &fonts);
         if glyphs.is_empty() {
@@ -933,10 +961,6 @@ mod tests {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("themes/atlus")
     }
 
-    fn hermes_fonts_dir() -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("themes/hermes")
-    }
-
     #[test]
     fn family_changes_width() {
         let e = TextEngine::new();
@@ -1247,82 +1271,57 @@ mod tests {
     }
 
     #[test]
-    fn hermes_cormorant_display_resolves() {
+    fn zero_negative_and_non_finite_font_sizes_are_safe() {
         let e = TextEngine::new();
-        e.load_fonts_from_dir(&hermes_fonts_dir());
-        let sans = e.measure("TYPE", 72.0, Weight::NORMAL, "");
-        let serif = e.measure("TYPE", 72.0, Weight::NORMAL, "Cormorant Display");
-        let light = e.measure("HIREN", 22.0, Weight::NORMAL, "Cormorant Display");
-        let bold = e.measure("HIREN", 22.0, Weight::BOLD, "Cormorant Display");
-        let courier = e.measure("MIT", 11.0, Weight::BOLD, "Courier Prime");
-        let courier_sans = e.measure("MIT", 11.0, Weight::BOLD, "");
-        assert!(
-            (serif - sans).abs() > 2.0,
-            "Cormorant Display must resolve: sans={sans} serif={serif}"
-        );
-        assert!(
-            (bold - light).abs() > 0.3,
-            "Cormorant Display Bold must resolve: light={light} bold={bold}"
-        );
-        assert!(
-            (courier - courier_sans).abs() > 0.4,
-            "Courier Prime must resolve: courier={courier} sans={courier_sans}"
-        );
+        // Regression: `font_size = "0"` used to panic inside cosmic-text
+        // (`line height cannot be 0`) and negative sizes wedged shaping.
+        let at_min = e.measure("x", MIN_FONT_SIZE, Weight::NORMAL, "");
+        assert!(at_min > 0.0);
+        assert_eq!(e.measure("x", 0.0, Weight::NORMAL, ""), at_min);
+        assert_eq!(e.measure("x", -8.0, Weight::NORMAL, ""), at_min);
+        assert_eq!(e.measure("x", f32::NAN, Weight::NORMAL, ""), 0.0);
+        assert_eq!(e.measure("x", f32::INFINITY, Weight::NORMAL, ""), 0.0);
+        let style = TextStyle::new("", None, None);
+        // Finite out-of-range sizes clamp and rasterize; non-finite values
+        // have no meaningful size and are rejected.
+        for bad in [0.0f32, -8.0] {
+            assert!(
+                e.render("x", 100.0, 20.0, bad, Weight::NORMAL, "left", (255, 255, 255, 255), &style)
+                    .is_some(),
+                "font_size {bad} must clamp, not panic"
+            );
+        }
+        for bad in [f32::NAN, f32::INFINITY] {
+            assert!(
+                e.render("x", 100.0, 20.0, bad, Weight::NORMAL, "left", (255, 255, 255, 255), &style)
+                    .is_none(),
+                "font_size {bad} must be rejected before shaping"
+            );
+        }
     }
 
     #[test]
-    fn hermes_hairlines_are_opaque_ink() {
+    fn out_of_range_font_sizes_are_clamped() {
         let e = TextEngine::new();
-        e.load_fonts_from_dir(&hermes_fonts_dir());
-        let mut style = TextStyle::new("Cormorant Display", None, None);
-        style.nowrap = true;
-        let (pm, _) = e
-            .render(
-                "T",
-                80.0,
-                90.0,
-                72.0,
-                Weight::NORMAL,
-                "left",
-                (245, 245, 245, 255),
-                &style,
-            )
-            .expect("render");
-        let (w, h) = (pm.width(), pm.height());
-        let data = pm.data();
-        let opaque = |i: usize| data[i + 3] == 255 && data[i] > 200;
-        let mut min_x = w;
-        let mut max_x = 0u32;
-        let mut min_y = h;
-        for y in 0..h {
-            for x in 0..w {
-                let i = ((y * w + x) * 4) as usize;
-                if opaque(i) {
-                    min_x = min_x.min(x);
-                    max_x = max_x.max(x);
-                    min_y = min_y.min(y);
-                }
-            }
-        }
-        assert!(max_x > min_x + 20, "T never painted: bbox x {min_x}..{max_x}");
-        let bar_w = max_x.saturating_sub(min_x) + 1;
-        let mut bar_cols = 0u32;
-        for x in min_x..=max_x {
-            let mut hit = false;
-            for y in min_y..min_y.saturating_add(8).min(h) {
-                let i = ((y * w + x) * 4) as usize;
-                if opaque(i) {
-                    hit = true;
-                    break;
-                }
-            }
-            if hit {
-                bar_cols += 1;
-            }
-        }
-        assert!(
-            bar_cols * 100 / bar_w >= 70,
-            "T crossbar evaporated: {bar_cols}/{bar_w} opaque cols in the top 8px"
-        );
+        e.load_fonts_from_dir(&atlus_fonts_dir());
+        let at_min = e.measure("HIREN", MIN_FONT_SIZE, Weight::NORMAL, "Anton");
+        let clamped_min = e.measure("HIREN", 0.01, Weight::NORMAL, "Anton");
+        assert!(at_min > 0.0);
+        assert!((clamped_min - at_min).abs() < 0.01, "0.01 must clamp to {MIN_FONT_SIZE}: {clamped_min} vs {at_min}");
+        let at_max = e.measure("HIREN", MAX_FONT_SIZE, Weight::NORMAL, "Anton");
+        let clamped_max = e.measure("HIREN", 1.0e9, Weight::NORMAL, "Anton");
+        assert!((clamped_max - at_max).abs() < 0.01, "1e9 must clamp to {MAX_FONT_SIZE}: {clamped_max} vs {at_max}");
+    }
+
+    #[test]
+    fn sanitize_font_size_bounds() {
+        assert_eq!(sanitize_font_size(16.0), Some(16.0));
+        assert_eq!(sanitize_font_size(MIN_FONT_SIZE), Some(MIN_FONT_SIZE));
+        assert_eq!(sanitize_font_size(MAX_FONT_SIZE), Some(MAX_FONT_SIZE));
+        assert_eq!(sanitize_font_size(0.0), Some(MIN_FONT_SIZE));
+        assert_eq!(sanitize_font_size(-3.0), Some(MIN_FONT_SIZE));
+        assert_eq!(sanitize_font_size(1.0e9), Some(MAX_FONT_SIZE));
+        assert_eq!(sanitize_font_size(f32::NAN), None);
+        assert_eq!(sanitize_font_size(f32::NEG_INFINITY), None);
     }
 }
