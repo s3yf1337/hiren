@@ -80,7 +80,7 @@ struct Inner {
     measure_cache: RefCell<HashMap<(String, u32, u16, String), f32>>,
     /// Rasterized text pixmaps: shaping + glyph blitting dominates frame time,
     /// and most text is identical across frames. Key quantizes geometry.
-    pixmap_cache: RefCell<HashMap<(String, u32, u32, u32, u16, u8, [u8; 4], String, TextStyleKey), Option<Pixmap>>>,
+    pixmap_cache: RefCell<HashMap<(String, u32, u32, u32, u16, u8, [u8; 4], String, TextStyleKey), Option<(Pixmap, u32)>>>,
     loaded_fonts: RefCell<HashSet<PathBuf>>,
 }
 
@@ -233,8 +233,19 @@ impl TextEngine {
         )
     }
 
-    fn make_buffer(fs: &mut FontSystem, text: &str, size: f32, weight: Weight, family: &str) -> Buffer {
-        let metrics = Metrics::new(size, size * 1.35);
+    fn make_buffer(
+        fs: &mut FontSystem,
+        text: &str,
+        size: f32,
+        weight: Weight,
+        family: &str,
+        nowrap: bool,
+    ) -> Buffer {
+        // Wrapped UI copy uses 1.35 so two lines fit a theme box. Nowrap
+        // display (stacked H1s) authors a box ≈ em-square; 1.35 then clips
+        // the bottom ~20% of the glyph — didone hairlines vanish first.
+        let line_height = if nowrap { size } else { size * 1.35 };
+        let metrics = Metrics::new(size, line_height);
         let mut buffer = Buffer::new(fs, metrics);
         let attrs = if family.is_empty() {
             Attrs::new().family(Family::SansSerif)
@@ -261,7 +272,7 @@ impl TextEngine {
         }
         let mut fs_guard = self.inner.font_system.borrow_mut();
         let fs = fs_guard.get_or_insert_with(FontSystem::new);
-        let mut buffer = Self::make_buffer(fs, text, size, weight, family);
+        let mut buffer = Self::make_buffer(fs, text, size, weight, family, false);
         buffer.set_wrap(fs, Wrap::None);
         buffer.set_size(fs, None, None);
         buffer.shape_until_scroll(fs, false);
@@ -299,6 +310,10 @@ impl TextEngine {
         if style.ransom {
             // Rotated per-letter scraps spill past the box.
             margin = margin.max(12.0);
+        } else if style.nowrap {
+            // Serifs and glyph bearings sit outside the em square; the
+            // compositor subtracts this margin so layout origin is unchanged.
+            margin = margin.max(8.0);
         }
         // Quantized cache key: same text + box + style → same pixmap.
         let key = (
@@ -313,7 +328,7 @@ impl TextEngine {
             TextStyleKey::of(style),
         );
         if let Some(hit) = self.inner.pixmap_cache.borrow().get(&key) {
-            return hit.clone().map(|pm| (pm, margin));
+            return hit.clone().map(|(pm, mq)| (pm, mq as f32 / 4.0));
         }
 
         let rendered = if style.ransom {
@@ -326,9 +341,14 @@ impl TextEngine {
             if cache.len() > 512 {
                 cache.clear();
             }
-            cache.insert(key, rendered.clone().map(|(pm, _)| pm));
+            cache.insert(
+                key,
+                rendered
+                    .clone()
+                    .map(|(pm, m)| (pm, (m * 4.0).round() as u32)),
+            );
         }
-        rendered.map(|(pm, _)| (pm, margin))
+        rendered
     }
 
     /// Rasterize text into a pixmap of `(w + 2m) x (h + 2m)` (the box plus the
@@ -353,14 +373,24 @@ impl TextEngine {
         }
         let mut fs_guard = self.inner.font_system.borrow_mut();
         let fs = fs_guard.get_or_insert_with(FontSystem::new);
-        let mut buffer = Self::make_buffer(fs, text, size, weight, &style.family);
+        let mut buffer = Self::make_buffer(fs, text, size, weight, &style.family, style.nowrap);
         buffer.set_size(fs, Some(w), None);
         buffer.set_wrap(fs, if style.nowrap { Wrap::None } else { Wrap::Word });
         buffer.shape_until_scroll(fs, false);
 
         let runs: Vec<_> = buffer.layout_runs().collect();
         let total_h: f32 = runs.iter().map(|r| r.line_height).sum();
-        let offset_y = ((h - total_h) / 2.0).max(0.0);
+        let overflow = if style.nowrap {
+            ((total_h - h) / 2.0).max(0.0)
+        } else {
+            0.0
+        };
+        let margin = margin.max(overflow + if style.nowrap { 4.0 } else { 0.0 });
+        let offset_y = if style.nowrap {
+            (h - total_h) / 2.0
+        } else {
+            ((h - total_h) / 2.0).max(0.0)
+        };
 
         let mut swash_guard = self.inner.swash.borrow_mut();
         let swash = swash_guard.get_or_insert_with(SwashCache::new);
@@ -445,7 +475,7 @@ impl TextEngine {
                 cursor += g.advance;
                 continue;
             };
-            let mut buffer = Self::make_buffer(fs, &g.ch, g.size, g.weight, &g.family);
+            let mut buffer = Self::make_buffer(fs, &g.ch, g.size, g.weight, &g.family, true);
             buffer.set_wrap(fs, Wrap::None);
             buffer.shape_until_scroll(fs, false);
             let runs: Vec<_> = buffer.layout_runs().collect();
@@ -858,20 +888,15 @@ fn blit_layout(
                         if hard_cut && alpha < 64 {
                             return;
                         }
-                        let prem = PremultipliedColorU8::from_rgba(
-                            ((pass_color.0 as u32 * alpha as u32) / 255) as u8,
-                            ((pass_color.1 as u32 * alpha as u32) / 255) as u8,
-                            ((pass_color.2 as u32 * alpha as u32) / 255) as u8,
-                            alpha,
-                        );
                         if let Some(dst) = pixels.get_mut((y as u32 * pm_w as u32 + x as u32) as usize) {
-                            if hard_cut {
+                            // Coverage is a mask, not glass. SourceOver of 40%
+                            // white onto #0000F2 is (98,98,243) — the hairline
+                            // vanishes and letters look half-erased.
+                            if hard_cut || alpha >= 18 {
                                 *dst = PremultipliedColorU8::from_rgba(
                                     pass_color.0, pass_color.1, pass_color.2, 255,
                                 )
                                 .unwrap_or(*dst);
-                            } else {
-                                *dst = prem.unwrap_or(*dst);
                             }
                         }
                     });
@@ -906,6 +931,10 @@ mod tests {
 
     fn atlus_fonts_dir() -> std::path::PathBuf {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("themes/atlus")
+    }
+
+    fn hermes_fonts_dir() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("themes/hermes")
     }
 
     #[test]
@@ -1215,5 +1244,85 @@ mod tests {
             "bundled Titan One must resolve without a fonts/ dir: sans={sans} titan={titan}"
         );
         assert!((abril - sans).abs() > 1.0, "bundled Abril Fatface missing: sans={sans} abril={abril}");
+    }
+
+    #[test]
+    fn hermes_cormorant_display_resolves() {
+        let e = TextEngine::new();
+        e.load_fonts_from_dir(&hermes_fonts_dir());
+        let sans = e.measure("TYPE", 72.0, Weight::NORMAL, "");
+        let serif = e.measure("TYPE", 72.0, Weight::NORMAL, "Cormorant Display");
+        let light = e.measure("HIREN", 22.0, Weight::NORMAL, "Cormorant Display");
+        let bold = e.measure("HIREN", 22.0, Weight::BOLD, "Cormorant Display");
+        let courier = e.measure("MIT", 11.0, Weight::BOLD, "Courier Prime");
+        let courier_sans = e.measure("MIT", 11.0, Weight::BOLD, "");
+        assert!(
+            (serif - sans).abs() > 2.0,
+            "Cormorant Display must resolve: sans={sans} serif={serif}"
+        );
+        assert!(
+            (bold - light).abs() > 0.3,
+            "Cormorant Display Bold must resolve: light={light} bold={bold}"
+        );
+        assert!(
+            (courier - courier_sans).abs() > 0.4,
+            "Courier Prime must resolve: courier={courier} sans={courier_sans}"
+        );
+    }
+
+    #[test]
+    fn hermes_hairlines_are_opaque_ink() {
+        let e = TextEngine::new();
+        e.load_fonts_from_dir(&hermes_fonts_dir());
+        let mut style = TextStyle::new("Cormorant Display", None, None);
+        style.nowrap = true;
+        let (pm, _) = e
+            .render(
+                "T",
+                80.0,
+                90.0,
+                72.0,
+                Weight::NORMAL,
+                "left",
+                (245, 245, 245, 255),
+                &style,
+            )
+            .expect("render");
+        let (w, h) = (pm.width(), pm.height());
+        let data = pm.data();
+        let opaque = |i: usize| data[i + 3] == 255 && data[i] > 200;
+        let mut min_x = w;
+        let mut max_x = 0u32;
+        let mut min_y = h;
+        for y in 0..h {
+            for x in 0..w {
+                let i = ((y * w + x) * 4) as usize;
+                if opaque(i) {
+                    min_x = min_x.min(x);
+                    max_x = max_x.max(x);
+                    min_y = min_y.min(y);
+                }
+            }
+        }
+        assert!(max_x > min_x + 20, "T never painted: bbox x {min_x}..{max_x}");
+        let bar_w = max_x.saturating_sub(min_x) + 1;
+        let mut bar_cols = 0u32;
+        for x in min_x..=max_x {
+            let mut hit = false;
+            for y in min_y..min_y.saturating_add(8).min(h) {
+                let i = ((y * w + x) * 4) as usize;
+                if opaque(i) {
+                    hit = true;
+                    break;
+                }
+            }
+            if hit {
+                bar_cols += 1;
+            }
+        }
+        assert!(
+            bar_cols * 100 / bar_w >= 70,
+            "T crossbar evaporated: {bar_cols}/{bar_w} opaque cols in the top 8px"
+        );
     }
 }

@@ -93,7 +93,7 @@ RUST_LOG=hiren_client=debug hiren-client       # тайминги кадров
   используется запасная тема. Проверьте `--validate-themes`.
 - **Нет фокуса клавиатуры** — в конфиге `keyboard_mode = "exclusive"`;
   на не-wlroots композиторах используйте winit-режим (`--no-layer-shell`).
-- **Тема не находится** — встроенные: `default, atlus, macos, layered,
+- **Тема не находится** — встроенные: `default, atlus, hermes, macos, layered,
   circular`; пользовательские лежат в `~/.config/hiren/themes/<имя>/theme.toml`.
 
 ## Темы

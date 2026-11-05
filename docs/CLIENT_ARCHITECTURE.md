@@ -454,7 +454,7 @@ hiren-client/
 │       ├── color.rs          # color parsing
 │       └── state_bridge.rs   # SearchBridge (modes → ObservableState)
 └── themes/
-    ├── default/  atlus/  macos/  layered/  circular/   # theme.toml (+ atlus/fonts)
+    ├── default/  atlus/  hermes/  macos/  layered/  circular/   # theme.toml (+ fonts/)
 ```
 
 User themes: `~/.config/hiren/themes/<name>/theme.toml`, selected via

@@ -13,7 +13,7 @@ Wayland-native application launcher for Linux — now with a fully declarative U
 - **Independent selector** — selection indicator is its own visual object, not a row state
 - **Expressive animations** — real damped springs, easings, enter animations with per-item stagger, rotation/scale transforms
 - **Fast** — list virtualization, expression/text caches, vsync-paced rendering, zero CPU when idle
-- **Themes** — 5 built-in radically different themes; user themes in `~/.config/hiren/themes/`
+- **Themes** — 6 built-in radically different themes; user themes in `~/.config/hiren/themes/`
 
 ## Architecture
 
@@ -54,7 +54,7 @@ Validate built-in themes without opening a window:
 
 ```bash
 cargo run -p hiren-client --features layer-shell -- --validate-themes
-# ✓ default, atlus, macos, layered, circular
+# ✓ default, atlus, hermes, macos, layered, circular
 ```
 
 ## Install
@@ -71,7 +71,7 @@ systemctl --user enable --now hiren-daemon
 ```bash
 ./target/release/hiren-daemon &
 ./target/release/hiren-client              # default theme
-./target/release/hiren-client --theme atlus
+./target/release/hiren-client --theme hermes
 ./target/release/hiren-client --list-themes
 ./target/release/hiren-client --screenshot layered --out /tmp/preview.png
 ```
@@ -124,7 +124,7 @@ key = "Ctrl+Return"
   prefix = "proxychains"
 
 [theme]
-name = "default"  # or atlus, macos, layered, circular, or your own
+name = "default"  # or atlus, hermes, macos, layered, circular, or your own
 ```
 
 ## Themes
@@ -145,6 +145,7 @@ animate = [{ property = "y", duration_ms = 220, easing = "ease_out_cubic" }]
 
 - `hiren-client/themes/default/theme.toml` — clean vertical launcher (uses runtime like all others)
 - `hiren-client/themes/atlus/theme.toml` — Metaphor-inspired archive menu: cream manuscript plane + navy void, independent selector, search as display type, selection as a compositional event
+- `hiren-client/themes/hermes/theme.toml` — Hermes Agent poster: cobalt field, light display serif as search, paper invert on selection, converging rays
 - `hiren-client/themes/macos/theme.toml` — calm floating card, spring motion
 - `hiren-client/themes/layered/theme.toml` — layered panels, decorative orbs reacting to selection
 - `hiren-client/themes/circular/theme.toml` — radial, search centered, results in circle
