@@ -56,7 +56,7 @@ pub fn resolve_with(
     ctx.diag = diag;
     let mut out = Vec::new();
     for node in &theme.nodes {
-        resolve_node(node, theme, &mut ctx, 0.0, 0.0, None, &mut out);
+        resolve_node(node, theme, &mut ctx, 0.0, 0.0, 1.0, &mut out);
     }
     // Stable sort by z keeps document order within a layer.
     out.sort_by_key(|n| n.z);
@@ -77,7 +77,7 @@ pub(crate) fn theme_uses_token(theme: &Theme, tokens: &[&str]) -> bool {
             matches!(&a.delay, Some(super::theme::DelaySpec::Expr(e)) if expr_uses(e, tokens))
                 || matches!(&a.from, Some(super::theme::FromSpec::Expr(e)) if expr_uses(e, tokens))
         });
-        [&n.x, &n.y, &n.width, &n.height, &n.visible, &n.opacity, &n.rotation, &n.skew, &n.scale]
+        [&n.x, &n.y, &n.width, &n.height, &n.visible, &n.opacity, &n.rotation, &n.skew, &n.scale, &n.text, &n.placeholder]
             .iter()
             .any(|f| f.as_deref().map(|e| expr_uses(e, tokens)).unwrap_or(false))
             || prop_hit || points_hit || child_hit || anim_hit
@@ -95,14 +95,14 @@ pub(crate) fn theme_uses_token(theme: &Theme, tokens: &[&str]) -> bool {
 /// Resolve one node (and its children / expansions) into `out`.
 ///
 /// * `base_x/base_y` — offset added to evaluated coordinates (repeater/container origin).
-/// * `id_suffix` — instance suffix for delegate expansion (`"-3"`).
+/// * `parent_opacity` — inherited opacity: node opacity multiplies down the tree.
 fn resolve_node(
     def: &NodeDef,
     theme: &Theme,
     ctx: &mut EvalContext,
     base_x: f32,
     base_y: f32,
-    id_suffix: Option<&str>,
+    parent_opacity: f32,
     out: &mut Vec<ResolvedNode>,
 ) {
     ctx.node = def.id.clone();
@@ -117,7 +117,7 @@ fn resolve_node(
 
     // ---- Repeater: expand over results or a static count --------------------
     if def.kind == "Repeater" {
-        resolve_repeater(def, theme, ctx, base_x, base_y, out);
+        resolve_repeater(def, theme, ctx, base_x, base_y, parent_opacity, None, None, out);
         return;
     }
 
@@ -125,7 +125,11 @@ fn resolve_node(
     let y = base_y + eval_f32(def.y.as_deref().unwrap_or("0"), ctx, 0.0);
     let w = eval_f32(def.width.as_deref().unwrap_or("100"), ctx, 100.0);
     let h = eval_f32(def.height.as_deref().unwrap_or("40"), ctx, 40.0);
-    let opacity = eval_f32(def.opacity.as_deref().unwrap_or("1"), ctx, 1.0).clamp(0.0, 1.0);
+    if !geometry_ok(x, y, w, h) {
+        warn_degenerate(ctx, x, y, w, h);
+        return;
+    }
+    let opacity = (parent_opacity * eval_f32(def.opacity.as_deref().unwrap_or("1"), ctx, 1.0)).clamp(0.0, 1.0);
     let rotation = def.rotation.as_deref().map(|e| eval_f32(e, ctx, 0.0)).unwrap_or(0.0);
     let skew = def.skew.as_deref().map(|e| eval_f32(e, ctx, 0.0)).unwrap_or(0.0);
     let scale = def.scale.as_deref().map(|e| eval_f32(e, ctx, 1.0)).unwrap_or(1.0);
@@ -153,7 +157,7 @@ fn resolve_node(
     let action = def.on_click.as_deref().and_then(|a| parse_action(a, ctx));
 
     let node = ResolvedNode {
-        id: with_suffix(&def.id, id_suffix),
+        id: def.id.clone(),
         kind: def.kind.clone(),
         x, y, width: w, height: h,
         opacity,
@@ -183,11 +187,11 @@ fn resolve_node(
         let mut cursor_y = 0.0;
         for child in &def.children {
             let (cx, cy) = match layout {
-                "column" => (0.0 + cursor_x, cursor_y),
-                "row" => (cursor_x, 0.0 + cursor_y),
+                "column" => (cursor_x, cursor_y),
+                "row" => (cursor_x, cursor_y),
                 _ => (0.0, 0.0),
             };
-            resolve_node(child, theme, ctx, x + cx, y + cy, id_suffix, out);
+            resolve_node(child, theme, ctx, x + cx, y + cy, opacity, out);
             let chw = eval_f32(child.width.as_deref().unwrap_or("100"), ctx, 100.0);
             let chh = eval_f32(child.height.as_deref().unwrap_or("40"), ctx, 40.0);
             match layout {
@@ -199,6 +203,30 @@ fn resolve_node(
     }
 }
 
+/// A node is drawable only with finite, non-negative geometry. Skipping invalid
+/// nodes beats `tiny_skia::Rect`'s fallback (a 1×1 dot at the origin) — one bad
+/// binding used to draw a stray pixel in the window corner.
+fn geometry_ok(x: f32, y: f32, w: f32, h: f32) -> bool {
+    x.is_finite() && y.is_finite() && w.is_finite() && h.is_finite() && w >= 0.0 && h >= 0.0
+}
+
+fn warn_degenerate(ctx: &mut EvalContext, x: f32, y: f32, w: f32, h: f32) {
+    if let Some(d) = &ctx.diag {
+        let id = ctx.node.clone();
+        d.borrow_mut().warn(&id, "layout", &format!("degenerate geometry (x={x}, y={y}, width={w}, height={h}); node skipped"));
+    }
+}
+
+/// `scope/id` for repeater instance nodes: two repeaters reusing the same
+/// delegate component must not produce colliding instance ids (animation keys
+/// and diagnostics are keyed by id).
+fn scoped_id(scope: Option<&str>, id: &str) -> String {
+    match scope {
+        Some(s) => format!("{s}/{id}"),
+        None => id.to_string(),
+    }
+}
+
 /// `text_case = "upper" | "lower"` — case-fold the resolved text at layout
 /// time (P5 sets its menus in caps; condensed grotesques read in uppercase).
 fn apply_text_case(text: &str, props: &HashMap<String, String>) -> String {
@@ -206,13 +234,6 @@ fn apply_text_case(text: &str, props: &HashMap<String, String>) -> String {
         Some("upper") => text.to_uppercase(),
         Some("lower") => text.to_lowercase(),
         _ => text.to_string(),
-    }
-}
-
-fn with_suffix(id: &str, suffix: Option<&str>) -> String {
-    match suffix {
-        Some(s) => format!("{id}{s}"),
-        None => id.to_string(),
     }
 }
 
@@ -295,6 +316,9 @@ fn resolve_repeater(
     ctx: &mut EvalContext,
     base_x: f32,
     base_y: f32,
+    parent_opacity: f32,
+    parent_scope: Option<&str>,
+    parent_clip: Option<(f32, f32, f32, f32)>,
     out: &mut Vec<ResolvedNode>,
 ) {
     let model = def.model.as_deref().unwrap_or("launcher.results");
@@ -305,6 +329,26 @@ fn resolve_repeater(
         }
         return;
     };
+    let rep_id = scoped_id(parent_scope, &def.id);
+
+    // A Repeater is a layout container, not a drawable: only its z (inherited as
+    // the delegate default) and opacity (multiplied down) can apply to the
+    // instances. The other node properties are meaningless there — warn instead
+    // of letting a theme believe it changed something.
+    let base_z = def.z.unwrap_or(0);
+    let opacity = (parent_opacity * eval_f32(def.opacity.as_deref().unwrap_or("1"), ctx, 1.0)).clamp(0.0, 1.0);
+    for (prop, present) in [
+        ("rotation", def.rotation.is_some()),
+        ("scale", def.scale.is_some()),
+        ("skew", def.skew.is_some()),
+        ("on_click", def.on_click.is_some()),
+    ] {
+        if present {
+            if let Some(d) = &ctx.diag {
+                d.borrow_mut().warn(&rep_id, "repeater", &format!("`{prop}` on a Repeater has no meaning; set it on the delegate nodes"));
+            }
+        }
+    }
 
     // Items: launcher results, or a static count for decorative repeats
     // (`count` prop takes precedence).
@@ -325,7 +369,10 @@ fn resolve_repeater(
 
     let layout = def.props.get("layout").map(|s| s.as_str()).unwrap_or("vertical");
     let gap = def.props.get("gap").map(|e| eval_f32(e, ctx, 8.0)).unwrap_or(8.0);
-    let item_h = def.props.get("item_height").map(|e| eval_f32(e, ctx, 44.0)).unwrap_or(44.0);
+    // Explicit `item_height` is the author's contract that the vertical
+    // pre-cull may use; guessing 44 px can hide rows that are actually taller.
+    let explicit_item_h = def.props.get("item_height").map(|e| eval_f32(e, ctx, 44.0));
+    let item_h = explicit_item_h.unwrap_or(44.0);
     let radius = def.props.get("radius").map(|e| eval_f32(e, ctx, 120.0)).unwrap_or(120.0);
     // Optional sliding window around the selection (ring/row layouts with many
     // items): only instances within ±window/2 of `selected_index` are built.
@@ -335,7 +382,8 @@ fn resolve_repeater(
         .props
         .get("window")
         .map(|e| eval_f32(e, ctx, 0.0))
-        .unwrap_or(if use_results && layout != "vertical" && layout != "free" { 9.0 } else { 0.0 }) as usize;
+        .unwrap_or(if use_results && layout != "vertical" && layout != "free" { 9.0 } else { 0.0 })
+        .max(0.0) as usize;
     // Visible list height (viewport for virtualization). Defaults to "rest of
     // the window" so themes only opt in when they care about the exact clip.
     let view_h = def
@@ -356,6 +404,14 @@ fn resolve_repeater(
     let clip_y = def.props.get("clip_y").map(|e| eval_f32(e, ctx, origin_y)).unwrap_or(origin_y);
     let clip_pad = def.props.get("clip_pad").map(|e| eval_f32(e, ctx, 0.0)).unwrap_or(0.0);
 
+    // `window` is a ring/row concept: vertical lists are virtualized by their
+    // viewport instead. Warn when a theme sets it and it silently does nothing.
+    if def.props.contains_key("window") && layout == "vertical" {
+        if let Some(d) = &ctx.diag {
+            d.borrow_mut().warn(&rep_id, "repeater", "prop `window` is ignored for `vertical` layout (the viewport cull applies)");
+        }
+    }
+
     // Virtualization: instances entirely outside the viewport band are never
     // built (see the pre-cull below). A pure runtime optimization — item
     // positions stay exactly as the bindings compute them.
@@ -368,13 +424,35 @@ fn resolve_repeater(
             }
     };
 
-    for idx in 0..count {
+    // A ring with more items than its window must place the *window slots*, not
+    // the full count: sharing `index/count` across 9 visible instances collapsed
+    // a 180-result ring into a tiny arc. The window is centred on the selection
+    // and wraps, so the selected item stays at the top as it moves.
+    let windowed_ring = layout == "circular" && sel_window > 0 && count > sel_window;
+    let window_indices: Option<Vec<usize>> = if windowed_ring {
+        let half = (sel_window / 2) as isize;
+        let sel = ctx.launcher.selected_index.min(count - 1) as isize;
+        Some(
+            (0..sel_window as isize)
+                .map(|slot| (sel + slot - half).rem_euclid(count as isize) as usize)
+                .collect(),
+        )
+    } else {
+        None
+    };
+    let cull_vertical = explicit_item_h.is_some();
+    let indices: Vec<usize> = match &window_indices {
+        Some(w) => w.clone(),
+        None => (0..count).collect(),
+    };
+
+    for (slot, idx) in indices.into_iter().enumerate() {
         // Cheap pre-cull before any binding evaluation for this instance: an
         // item entirely outside the repeater's viewport is never built. The
         // origin already includes scroll offsets, so spring overshoot is
         // handled naturally.
         match layout {
-            "vertical" => {
+            "vertical" if cull_vertical => {
                 let top = origin_y + idx as f32 * (item_h + gap);
                 // Cull against the same fixed window-space band the renderer
                 // scissors to — NOT the (scrolled) repeater origin.
@@ -383,7 +461,7 @@ fn resolve_repeater(
                 }
             }
             "circular" | "row" | "free" => {
-                if !in_selection_window(idx) {
+                if window_indices.is_none() && !in_selection_window(idx) {
                     continue;
                 }
             }
@@ -408,45 +486,124 @@ fn resolve_repeater(
         }
         let mut item_ctx = ctx.clone();
         item_ctx.locals = locals;
-        item_ctx.node = format!("{}[{}]", def.id, idx);
+        item_ctx.node = format!("{rep_id}[{idx}]");
 
         // Instance offset per arrangement.
         let (off_x, off_y) = match layout {
             "circular" => {
-                let angle = (idx as f32 / count as f32) * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
+                let angle = if windowed_ring {
+                    // Window slots are evenly spread around the full circle and
+                    // the selected slot sits at the top.
+                    let half = (sel_window / 2) as f32;
+                    (slot as f32 - half) / sel_window as f32 * std::f32::consts::TAU
+                        - std::f32::consts::FRAC_PI_2
+                } else {
+                    (idx as f32 / count as f32) * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2
+                };
                 (angle.cos() * radius, angle.sin() * radius)
             }
             "row" | "free" => (0.0, 0.0), // delegates place themselves
             _ => (0.0, idx as f32 * (item_h + gap)), // vertical
         };
 
-        let suffix = format!("-{idx}");
         // Delegate instances are scissored to the repeater's box so a scrolled
         // list slides under the rest of the UI instead of over it. Rings place
-        // items around the center — no clip there.
+        // items around the center — no clip there. Nested repeaters inherit the
+        // outer scissor (intersection, never a widening).
         let clip = match layout {
             "vertical" => Some((origin_x - clip_pad, clip_y - 0.5, view_w + clip_pad * 2.0, view_h + 1.0)),
             "row" => Some((origin_x, clip_y - 0.5, view_w, item_h + 1.0)),
             _ => None, // circular + free: no scissor
         };
+        let clip = intersect_clip(clip, parent_clip);
+        // Instances are scoped by repeater id + index: two repeaters may share a
+        // delegate component, and animation keys/diagnostics are keyed by id.
+        let instance_scope = format!("{rep_id}-{idx}");
         for delegate_node in &comp.nodes {
-            resolve_delegate_node_with_component(delegate_node, &mut item_ctx, origin_x + off_x, origin_y + off_y, &suffix, idx, &comp.animate, clip, out);
+            resolve_delegate_node_with_component(
+                delegate_node,
+                theme,
+                &mut item_ctx,
+                origin_x + off_x,
+                origin_y + off_y,
+                &instance_scope,
+                idx,
+                &comp.animate,
+                clip,
+                opacity,
+                base_z,
+                out,
+            );
         }
     }
 }
 
+/// Intersect two optional scissor rectangles (`None` = no clip).
+fn intersect_clip(
+    a: Option<(f32, f32, f32, f32)>,
+    b: Option<(f32, f32, f32, f32)>,
+) -> Option<(f32, f32, f32, f32)> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(r), None) | (None, Some(r)) => Some(r),
+        (Some(a), Some(b)) => {
+            let x0 = a.0.max(b.0);
+            let y0 = a.1.max(b.1);
+            let x1 = (a.0 + a.2).min(b.0 + b.2);
+            let y1 = (a.1 + a.3).min(b.1 + b.3);
+            Some((x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0)))
+        }
+    }
+}
+
+/// Merge component-level animations into a delegate node's own list.
+///
+/// Node-level entries are the base (the more specific declaration); a component
+/// entry for the same `(property, trigger)` contributes the fields the node did
+/// not set (entrance `from`, stagger `delay`). Keeping both entries used to give
+/// them the same `node:property` animation key, so they retargeted each other
+/// every frame and the row never reached its layout position.
+fn merge_anims(node_anims: &[AnimateDef], comp_anims: &[AnimateDef]) -> Vec<AnimateDef> {
+    let mut out: Vec<AnimateDef> = node_anims.to_vec();
+    for ca in comp_anims {
+        match out.iter_mut().find(|a| a.property == ca.property && a.trigger == ca.trigger) {
+            Some(existing) => {
+                if existing.from.is_none() {
+                    existing.from = ca.from.clone();
+                }
+                if existing.delay.is_none() {
+                    existing.delay = ca.delay.clone();
+                }
+                if existing.delay_ms == 0 {
+                    existing.delay_ms = ca.delay_ms;
+                }
+                if existing.spring.is_none() {
+                    existing.spring = ca.spring.clone();
+                }
+            }
+            None => out.push(ca.clone()),
+        }
+    }
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
 fn resolve_delegate_node_with_component(
     def: &NodeDef,
+    theme: &Theme,
     ctx: &mut EvalContext,
     base_x: f32,
     base_y: f32,
-    id_suffix: &str,
+    scope: &str,
     index: usize,
     comp_anims: &[AnimateDef],
     clip: Option<(f32, f32, f32, f32)>,
+    parent_opacity: f32,
+    base_z: i32,
     out: &mut Vec<ResolvedNode>,
 ) {
-    ctx.node = format!("{}{}", def.id, id_suffix);
+    let node_id = scoped_id(Some(scope), &def.id);
+    ctx.node = node_id.clone();
 
     let visible = match &def.visible {
         Some(v) => eval_bool(v, ctx, true),
@@ -456,11 +613,22 @@ fn resolve_delegate_node_with_component(
         return;
     }
 
+    // A nested Repeater inside a component expands like a top-level one; the
+    // instance scope keeps its ids (and animation keys) unique.
+    if def.kind == "Repeater" {
+        resolve_repeater(def, theme, ctx, base_x, base_y, parent_opacity, Some(scope), clip, out);
+        return;
+    }
+
     let x = base_x + eval_f32(def.x.as_deref().unwrap_or("0"), ctx, 0.0);
     let y = base_y + eval_f32(def.y.as_deref().unwrap_or("0"), ctx, 0.0);
     let w = eval_f32(def.width.as_deref().unwrap_or("100"), ctx, 100.0);
     let h = eval_f32(def.height.as_deref().unwrap_or("40"), ctx, 40.0);
-    let opacity = eval_f32(def.opacity.as_deref().unwrap_or("1"), ctx, 1.0).clamp(0.0, 1.0);
+    if !geometry_ok(x, y, w, h) {
+        warn_degenerate(ctx, x, y, w, h);
+        return;
+    }
+    let opacity = (parent_opacity * eval_f32(def.opacity.as_deref().unwrap_or("1"), ctx, 1.0)).clamp(0.0, 1.0);
     let rotation = def.rotation.as_deref().map(|e| eval_f32(e, ctx, 0.0)).unwrap_or(0.0);
     let skew = def.skew.as_deref().map(|e| eval_f32(e, ctx, 0.0)).unwrap_or(0.0);
     let scale = def.scale.as_deref().map(|e| eval_f32(e, ctx, 1.0)).unwrap_or(1.0);
@@ -482,16 +650,15 @@ fn resolve_delegate_node_with_component(
     let text = def.text.as_ref().map(|e| apply_text_case(&eval_str(e, ctx), &props));
     let action = def.on_click.as_deref().and_then(|a| parse_action(a, ctx));
 
-    let mut merged: Vec<AnimateDef> = def.animate.iter().chain(comp_anims.iter()).cloned().collect();
+    let merged = merge_anims(&def.animate, comp_anims);
     let baked = bake_anims(&merged, ctx);
-    merged.clear();
 
     out.push(ResolvedNode {
-        id: format!("{}{}", def.id, id_suffix),
+        id: node_id,
         kind: def.kind.clone(),
         x, y, width: w, height: h,
         opacity,
-        z: def.z.unwrap_or(0),
+        z: def.z.unwrap_or(base_z),
         visible: true,
         props,
         text,
@@ -508,18 +675,41 @@ fn resolve_delegate_node_with_component(
         clip,
     });
 
-    // Delegate children (nested), same suffix, offsets relative to parent.
+    // Delegate children honor their parent's container layout like any other
+    // container (`layout = "column" | "row"` + `gap`); before, they ignored both.
     if !def.children.is_empty() {
+        let layout = def.props.get("layout").map(|s| s.as_str()).unwrap_or("free");
+        let gap = def.props.get("gap").map(|s| eval_f32(s, ctx, 8.0)).unwrap_or(8.0);
+        let mut cursor_x = 0.0;
+        let mut cursor_y = 0.0;
         for child in &def.children {
-            resolve_delegate_node_with_component(child, ctx, x, y, id_suffix, index, comp_anims, clip, out);
+            let (cx, cy) = match layout {
+                "column" | "row" => (cursor_x, cursor_y),
+                _ => (0.0, 0.0),
+            };
+            resolve_delegate_node_with_component(
+                child,
+                theme,
+                ctx,
+                x + cx,
+                y + cy,
+                scope,
+                index,
+                comp_anims,
+                clip,
+                opacity,
+                base_z,
+                out,
+            );
+            let chw = eval_f32(child.width.as_deref().unwrap_or("100"), ctx, 100.0);
+            let chh = eval_f32(child.height.as_deref().unwrap_or("40"), ctx, 40.0);
+            match layout {
+                "column" => cursor_y += chh + gap,
+                "row" => cursor_x += chw + gap,
+                _ => {}
+            }
         }
     }
-}
-
-/// Alias kept for direct delegate resolution without component animations.
-#[allow(dead_code)]
-fn resolve_delegate_node(def: &NodeDef, ctx: &mut EvalContext, base_x: f32, base_y: f32, id_suffix: &str, index: usize, out: &mut Vec<ResolvedNode>) {
-    resolve_delegate_node_with_component(def, ctx, base_x, base_y, id_suffix, index, &[], None, out)
 }
 
 // ---------------------------------------------------------------------------
@@ -528,17 +718,25 @@ fn resolve_delegate_node(def: &NodeDef, ctx: &mut EvalContext, base_x: f32, base
 
 /// Parse an `on_click` action: `name` or `name(arg)` with arg evaluated in
 /// the current scope (so `"activate(index)"` resolves per repeater instance).
+///
+/// Inside a repeater an argument-less `select` / `activate` targets the clicked
+/// instance: the instance index is a layout local, and losing it made
+/// `on_click = "select"` a no-op while `activate` fell back to the *previous*
+/// selection. The client also receives the index via `ResolvedNode.index`.
 fn parse_action(raw: &str, ctx: &mut EvalContext) -> Option<NodeAction> {
     let raw = raw.trim();
     let (name, arg) = match raw.find('(') {
         Some(i) if raw.ends_with(')') => (raw[..i].trim(), Some(raw[i + 1..raw.len() - 1].trim())),
         _ => (raw, None),
     };
+    let instance_index = ctx.locals.get("index").and_then(|v| v.parse::<usize>().ok());
     // Evaluate args once (arg may reference repeater locals like `index`).
     let idx = arg
-        .map(|e| eval_f32(e, ctx, -1.0))
-        .filter(|v| *v >= 0.0)
-        .map(|v| v as usize);
+        .and_then(|e| {
+            let v = eval_f32(e, ctx, -1.0);
+            (v >= 0.0).then_some(v as usize)
+        })
+        .or(instance_index);
     let delta = arg.map(|e| eval_f32(e, ctx, 0.0)).unwrap_or(0.0);
     let text = arg.map(|e| eval_str(e, ctx)).unwrap_or_default();
     match name {
@@ -635,14 +833,14 @@ mod tests {
         );
         let out = resolve(&t, &state(3, 1), (400, 300), 0.0, None, None);
         assert_eq!(out.nodes.len(), 6);
-        let row0 = out.nodes.iter().find(|n| n.id == "rowbg-0").unwrap();
-        let row1 = out.nodes.iter().find(|n| n.id == "rowbg-1").unwrap();
+        let row0 = out.nodes.iter().find(|n| n.id == "list-0/rowbg").unwrap();
+        let row1 = out.nodes.iter().find(|n| n.id == "list-1/rowbg").unwrap();
         assert_eq!((row0.x, row0.y), (10.0, 20.0));
         assert_eq!(row1.y, 66.0);
         assert_eq!(row0.background, Some((0, 0, 0, 0)));
         assert_eq!(row1.background, Some((255, 0, 0, 255)));
         assert_eq!(row1.action, Some(NodeAction::Activate(Some(1))));
-        let txt = out.nodes.iter().find(|n| n.id == "rowtxt-2").unwrap();
+        let txt = out.nodes.iter().find(|n| n.id == "list-2/rowtxt").unwrap();
         assert_eq!(txt.text.as_deref(), Some("App2"));
     }
 
@@ -670,7 +868,7 @@ mod tests {
             "#,
         );
         let out = resolve(&t, &state(4, 0), (400, 400), 0.0, None, None);
-        let d0 = out.nodes.iter().find(|n| n.id == "dot-0").unwrap();
+        let d0 = out.nodes.iter().find(|n| n.id == "orbit-0/dot").unwrap();
         // first item is at -90° (top): center + (0, -100) + delegate offset (-20,-20)
         assert!((d0.x - (200.0 - 20.0)).abs() < 0.5, "d0.x={}", d0.x);
         assert!((d0.y - (200.0 - 100.0 - 20.0)).abs() < 0.5, "d0.y={}", d0.y);
@@ -777,7 +975,7 @@ mod tests {
         let card = out.nodes.iter().find(|n| n.id == "card").unwrap();
         assert_eq!(card.rotation, -6.0);
         assert_eq!(card.scale, 1.05);
-        let rr2 = out.nodes.iter().find(|n| n.id == "rr-2").unwrap();
+        let rr2 = out.nodes.iter().find(|n| n.id == "rows-2/rr").unwrap();
         assert_eq!(rr2.animate[0].delay_ms, 60); // index * 30 baked
     }
 
@@ -815,7 +1013,465 @@ mod tests {
         let out = resolve(&t, &state(0, 0), (400, 300), 0.0, None, None);
         assert!(out.uses_impulse);
         assert!(!out.uses_time);
+
         assert_eq!(out.nodes[0].x, 20.0, "hit defaults to 0 so shake is a no-op");
+    }
+
+    #[test]
+    fn theme_uses_token_sees_text_and_placeholder() {
+        // Regression: text/placeholder bindings were not scanned, so a
+        // time-/hit-bound label never triggered the continuous frame loop.
+        let t = theme_from(
+            r#"
+            [[nodes]]
+            id = "clock"
+            type = "Text"
+            x = "0"
+            y = "0"
+            width = "100"
+            height = "20"
+            text = "sin(time) > 0 ? 'ON' : 'OFF'"
+            "#,
+        );
+        assert!(resolve(&t, &state(0, 0), (200, 100), 0.0, None, None).uses_time);
+        let t = theme_from(
+            r#"
+            [[nodes]]
+            id = "input"
+            type = "TextInput"
+            x = "0"
+            y = "0"
+            width = "100"
+            height = "20"
+            placeholder = "hit > 0.5 ? 'SLAM' : 'TYPE'"
+            "#,
+        );
+        assert!(resolve(&t, &state(0, 0), (200, 100), 0.0, None, None).uses_impulse);
+    }
+
+    #[test]
+    fn opacity_multiplies_down_the_tree() {
+        let t = theme_from(
+            r#"
+            [[nodes]]
+            id = "panel"
+            type = "Container"
+            x = "10"
+            y = "10"
+            width = "200"
+            height = "200"
+            opacity = "0.5"
+
+            [[nodes.children]]
+            id = "child"
+            type = "Rectangle"
+            x = "0"
+            y = "0"
+            width = "50"
+            height = "50"
+            opacity = "0.5"
+            "#,
+        );
+        let out = resolve(&t, &state(0, 0), (400, 300), 0.0, None, None);
+        let panel = out.nodes.iter().find(|n| n.id == "panel").unwrap();
+        let child = out.nodes.iter().find(|n| n.id == "child").unwrap();
+        assert!((panel.opacity - 0.5).abs() < 1e-6);
+        assert!((child.opacity - 0.25).abs() < 1e-6, "child opacity multiplies the parent's, got {}", child.opacity);
+    }
+
+    #[test]
+    fn degenerate_geometry_is_skipped_with_a_warning() {
+        let t = theme_from(
+            r#"
+            [[nodes]]
+            id = "bad"
+            type = "Rectangle"
+            x = "10"
+            y = "10"
+            width = "0 - 10"
+            height = "20"
+
+            [[nodes]]
+            id = "good"
+            type = "Rectangle"
+            x = "10"
+            y = "10"
+            width = "20"
+            height = "20"
+            "#,
+        );
+        let diag = std::rc::Rc::new(std::cell::RefCell::new(super::super::binding::Diag::default()));
+        let out = resolve(&t, &state(0, 0), (400, 300), 0.0, None, Some(diag.clone()));
+        assert!(out.nodes.iter().all(|n| n.id != "bad"), "negative width must not produce a fallback dot");
+        assert!(out.nodes.iter().any(|n| n.id == "good"));
+        assert!(
+            diag.borrow().warnings.iter().any(|w| w.contains("degenerate geometry")),
+            "{:?}",
+            diag.borrow().warnings
+        );
+    }
+
+    #[test]
+    fn vertical_cull_requires_explicit_item_height() {
+        // With no `item_height` the pre-cull used to assume 44 px and could hide
+        // rows taller than that; it is now opt-in via an explicit item_height.
+        let t = theme_from(
+            r#"
+            [[nodes]]
+            id = "list"
+            type = "Repeater"
+            x = "0"
+            y = "0"
+            width = "100"
+            height = "60"
+            model = "launcher.results"
+            delegate = "dot"
+            props = { layout = "vertical", gap = "0" }
+
+            [components.dot]
+            [[components.dot.nodes]]
+            id = "d"
+            type = "Rectangle"
+            x = "0"
+            y = "0"
+            width = "10"
+            height = "20"
+            "#,
+        );
+        let out = resolve(&t, &state(10, 0), (400, 300), 0.0, None, None);
+        assert_eq!(out.nodes.len(), 10, "no item_height → no vertical pre-cull");
+
+        let t = theme_from(
+            r#"
+            [[nodes]]
+            id = "list"
+            type = "Repeater"
+            x = "0"
+            y = "0"
+            width = "100"
+            height = "60"
+            model = "launcher.results"
+            delegate = "dot"
+            props = { layout = "vertical", gap = "0", item_height = "20", clip_y = "0" }
+
+            [components.dot]
+            [[components.dot.nodes]]
+            id = "d"
+            type = "Rectangle"
+            x = "0"
+            y = "0"
+            width = "10"
+            height = "20"
+            "#,
+        );
+        let out = resolve(&t, &state(10, 0), (400, 300), 0.0, None, None);
+        assert_eq!(out.nodes.len(), 4, "explicit item_height enables the viewport cull");
+    }
+
+    #[test]
+    fn repeater_inherits_z_and_multiplies_opacity() {
+        let t = theme_from(
+            r#"
+            [[nodes]]
+            id = "list"
+            type = "Repeater"
+            x = "0"
+            y = "0"
+            model = "launcher.results"
+            delegate = "row"
+            z = 5
+            opacity = "0.5"
+            rotation = "-10"
+            props = { item_height = "40" }
+
+            [components.row]
+            [[components.row.nodes]]
+            id = "r"
+            type = "Rectangle"
+            x = "0"
+            y = "0"
+            width = "10"
+            height = "10"
+            opacity = "0.5"
+            "#,
+        );
+        let diag = std::rc::Rc::new(std::cell::RefCell::new(super::super::binding::Diag::default()));
+        let out = resolve(&t, &state(1, 0), (400, 300), 0.0, None, Some(diag.clone()));
+        let r = out.nodes.iter().find(|n| n.id == "list-0/r").unwrap();
+        assert_eq!(r.z, 5, "delegate z defaults to the repeater's z");
+        assert!((r.opacity - 0.25).abs() < 1e-6, "repeater opacity multiplies down, got {}", r.opacity);
+        let warnings = diag.borrow().warnings.clone();
+        assert!(warnings.iter().any(|w| w.contains("`rotation` on a Repeater")), "{warnings:?}");
+    }
+
+    #[test]
+    fn component_animations_merge_instead_of_duplicating_properties() {
+        let t = theme_from(
+            r#"
+            [[nodes]]
+            id = "list"
+            type = "Repeater"
+            x = "100"
+            y = "0"
+            model = "launcher.results"
+            delegate = "row"
+            props = { item_height = "40" }
+
+            [components.row]
+            [[components.row.animate]]
+            property = "x"
+            from = -100
+            duration_ms = 500
+            delay = "index * 30"
+            easing = "ease_out_expo"
+
+            [[components.row.nodes]]
+            id = "r"
+            type = "Rectangle"
+            x = "0"
+            y = "0"
+            width = "10"
+            height = "10"
+            animate = [{ property = "x", duration_ms = 120, easing = "linear" }]
+            "#,
+        );
+        let out = resolve(&t, &state(3, 0), (400, 300), 0.0, None, None);
+        for (i, name) in [(0, "list-0/r"), (1, "list-1/r")] {
+            let n = out.nodes.iter().find(|n| n.id == name).unwrap();
+            assert_eq!(n.animate.len(), 1, "one entry per property after merge: {:?}", n.animate.iter().map(|a| &a.property).collect::<Vec<_>>());
+            assert_eq!(n.animate[0].property, "x");
+            assert_eq!(n.animate[0].from_value, Some(-100.0), "component entrance `from` survives the merge");
+            assert_eq!(n.animate[0].delay_ms, i * 30, "component stagger survives the merge");
+            assert_eq!(n.animate[0].duration_ms, 120, "node-level duration wins");
+            assert_eq!(n.animate[0].easing, "linear", "node-level easing wins");
+        }
+    }
+
+    #[test]
+    fn two_repeaters_sharing_a_delegate_get_unique_instance_ids() {
+        let t = theme_from(
+            r#"
+            [[nodes]]
+            id = "left"
+            type = "Repeater"
+            x = "0"
+            y = "0"
+            delegate = "item"
+            props = { count = "2", layout = "row" }
+
+            [[nodes]]
+            id = "right"
+            type = "Repeater"
+            x = "100"
+            y = "0"
+            delegate = "item"
+            props = { count = "2", layout = "row" }
+
+            [components.item]
+            [[components.item.nodes]]
+            id = "dot"
+            type = "Rectangle"
+            x = "0"
+            y = "0"
+            width = "10"
+            height = "10"
+            "#,
+        );
+        let out = resolve(&t, &state(0, 0), (400, 300), 0.0, None, None);
+        let ids: Vec<&str> = out.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids.len(), 4);
+        let unique: std::collections::HashSet<&&str> = ids.iter().collect();
+        assert_eq!(unique.len(), 4, "instance ids collide across repeaters: {ids:?}");
+        for expected in ["left-0/dot", "left-1/dot", "right-0/dot", "right-1/dot"] {
+            assert!(ids.contains(&expected), "missing {expected} in {ids:?}");
+        }
+    }
+
+    #[test]
+    fn nested_repeater_inside_component_expands() {
+        let t = theme_from(
+            r#"
+            [[nodes]]
+            id = "outer"
+            type = "Repeater"
+            x = "10"
+            y = "10"
+            delegate = "row"
+            props = { count = "2", layout = "row", gap = "0" }
+
+            [components.row]
+            [[components.row.nodes]]
+            id = "mini"
+            type = "Repeater"
+            x = "0"
+            y = "0"
+            delegate = "dot"
+            props = { count = "3", layout = "row" }
+
+            [components.dot]
+            [[components.dot.nodes]]
+            id = "d"
+            type = "Rectangle"
+            x = "index * 10"
+            y = "0"
+            width = "8"
+            height = "8"
+            "#,
+        );
+        let out = resolve(&t, &state(0, 0), (400, 300), 0.0, None, None);
+        assert_eq!(out.nodes.len(), 6, "nested Repeater must expand: {:?}", out.nodes.iter().map(|n| &n.id).collect::<Vec<_>>());
+        for i in 0..2 {
+            for j in 0..3 {
+                let id = format!("outer-{i}/mini-{j}/d");
+                assert!(out.nodes.iter().any(|n| n.id == id), "missing {id}");
+            }
+        }
+    }
+
+    #[test]
+    fn delegate_children_honor_container_layout() {
+        let t = theme_from(
+            r#"
+            [[nodes]]
+            id = "list"
+            type = "Repeater"
+            x = "0"
+            y = "0"
+            delegate = "row"
+            props = { count = "1", item_height = "60" }
+
+            [components.row]
+            [[components.row.nodes]]
+            id = "panel"
+            type = "Container"
+            x = "0"
+            y = "0"
+            width = "100"
+            height = "60"
+            props = { layout = "column", gap = "4" }
+
+            [[components.row.nodes.children]]
+            id = "c1"
+            type = "Rectangle"
+            x = "0"
+            y = "0"
+            width = "50"
+            height = "10"
+
+            [[components.row.nodes.children]]
+            id = "c2"
+            type = "Rectangle"
+            x = "5"
+            y = "0"
+            width = "50"
+            height = "10"
+            "#,
+        );
+        let out = resolve(&t, &state(0, 0), (400, 300), 0.0, None, None);
+        let c1 = out.nodes.iter().find(|n| n.id == "list-0/c1").unwrap();
+        let c2 = out.nodes.iter().find(|n| n.id == "list-0/c2").unwrap();
+        assert_eq!((c1.x, c1.y), (0.0, 0.0));
+        assert_eq!((c2.x, c2.y), (5.0, 14.0), "column flow + gap inside a delegate");
+    }
+
+    #[test]
+    fn on_click_without_argument_targets_the_clicked_instance() {
+        let t = theme_from(
+            r#"
+            [[nodes]]
+            id = "list"
+            type = "Repeater"
+            x = "0"
+            y = "0"
+            model = "launcher.results"
+            delegate = "row"
+            props = { item_height = "40" }
+
+            [[nodes]]
+            id = "enter"
+            type = "Rectangle"
+            x = "0"
+            y = "0"
+            width = "10"
+            height = "10"
+            on_click = "activate"
+
+            [components.row]
+            [[components.row.nodes]]
+            id = "sel"
+            type = "Rectangle"
+            x = "0"
+            y = "0"
+            width = "10"
+            height = "10"
+            on_click = "select"
+
+            [[components.row.nodes]]
+            id = "act"
+            type = "Rectangle"
+            x = "0"
+            y = "20"
+            width = "10"
+            height = "10"
+            on_click = "activate"
+            "#,
+        );
+        let out = resolve(&t, &state(3, 0), (400, 300), 0.0, None, None);
+        let sel = out.nodes.iter().find(|n| n.id == "list-2/sel").unwrap();
+        assert_eq!(sel.action, Some(NodeAction::Select(Some(2))), "select uses the repeater index");
+        assert_eq!(sel.index, Some(2));
+        let act = out.nodes.iter().find(|n| n.id == "list-1/act").unwrap();
+        assert_eq!(act.action, Some(NodeAction::Activate(Some(1))), "activate uses the clicked index");
+        // Outside a repeater there is no instance: activate stays `current selection`.
+        let enter = out.nodes.iter().find(|n| n.id == "enter").unwrap();
+        assert_eq!(enter.action, Some(NodeAction::Activate(None)));
+        assert_eq!(enter.index, None);
+    }
+
+    #[test]
+    fn circular_window_places_slots_around_the_full_ring() {
+        // Regression: with 180 results only 9 instances are built, but they were
+        // placed by `index/count` → a ~18° arc instead of a ring.
+        let t = theme_from(
+            r#"
+            [[nodes]]
+            id = "orbit"
+            type = "Repeater"
+            x = "300"
+            y = "300"
+            model = "launcher.results"
+            delegate = "dot"
+            props = { layout = "circular", radius = "150", item_height = "20" }
+
+            [components.dot]
+            [[components.dot.nodes]]
+            id = "d"
+            type = "Rectangle"
+            x = "-5"
+            y = "-5"
+            width = "10"
+            height = "10"
+            "#,
+        );
+        let out = resolve(&t, &state(180, 90), (600, 600), 0.0, None, None);
+        assert_eq!(out.nodes.len(), 9, "9-item window around the selection");
+        let mut angles: Vec<f32> = out
+            .nodes
+            .iter()
+            .map(|n| {
+                let cx = n.x + 5.0 - 300.0;
+                let cy = n.y + 5.0 - 300.0;
+                cy.atan2(cx).to_degrees().rem_euclid(360.0)
+            })
+            .collect();
+        angles.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let spread = angles.last().unwrap() - angles.first().unwrap();
+        assert!(spread > 300.0, "windowed ring must cover the circle, spread={spread}, angles={angles:?}");
+        // The selected item (index 90) sits at the top of the ring.
+        let selected = out.nodes.iter().find(|n| n.id == "orbit-90/d").unwrap();
+        let sx = selected.x + 5.0 - 300.0;
+        let sy = selected.y + 5.0 - 300.0;
+        assert!(sx.abs() < 2.0 && sy < -140.0, "selected slot at top: ({sx}, {sy})");
     }
 }
 
@@ -825,12 +1481,14 @@ mod atlus_theme_tests {
     use crate::launcher::{LauncherState, ObservableState};
     use crate::ui_runtime::theme::Theme;
 
-    fn load() -> (Theme, impl Fn(&str, f32, &str) -> f32) {
+    fn load() -> (Theme, impl Fn(&str, f32, &str, u16) -> f32) {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("themes/atlus/theme.toml");
         let t = Theme::load_from_file(&path).expect("load atlus");
         let engine = crate::ui_runtime::text::TextEngine::new();
         engine.load_fonts_from_dir(path.parent().unwrap());
-        let meas = move |t: &str, size: f32, family: &str| engine.measure(t, size, cosmic_text::Weight::NORMAL, family);
+        let meas = move |t: &str, size: f32, family: &str, weight: u16| {
+            engine.measure(t, size, cosmic_text::Weight(weight), family)
+        };
         (t, meas)
     }
 
@@ -896,8 +1554,8 @@ mod atlus_theme_tests {
         let sel_b = b.nodes.iter().find(|n| n.id == "selector").unwrap();
         assert!(sel_a.height > 70.0, "selector is larger than a row");
         assert!(sel_b.y - sel_a.y > 80.0, "selector travels with selection ({} -> {})", sel_a.y, sel_b.y);
-        let name0 = a.nodes.iter().find(|n| n.id == "row_name-0").unwrap();
-        let name1 = a.nodes.iter().find(|n| n.id == "row_name-1").unwrap();
+        let name0 = a.nodes.iter().find(|n| n.id == "results-0/row_name").unwrap();
+        let name1 = a.nodes.iter().find(|n| n.id == "results-1/row_name").unwrap();
         assert!(name0.x > name1.x, "selected row steps forward of its neighbours ({} vs {})", name0.x, name1.x);
         let dossier_a = a.nodes.iter().find(|n| n.id == "archive_name").unwrap();
         let dossier_b = b.nodes.iter().find(|n| n.id == "archive_name").unwrap();
@@ -964,7 +1622,7 @@ mod atlus_theme_tests {
         let rest = rt.resolve(size);
         let cream = rest.nodes.iter().find(|n| n.id == "cream_page").expect("cream");
         assert!(cream.opacity > 0.9, "manuscript settled opaque, o={}", cream.opacity);
-        let row = rest.nodes.iter().find(|n| n.id == "row_name-0").expect("row");
+        let row = rest.nodes.iter().find(|n| n.id == "results-0/row_name").expect("row");
         assert!(row.opacity > 0.5, "results must remain readable, o={}", row.opacity);
         assert!(row.x > 80.0, "selected name sits on the cascade, x={}", row.x);
         let plate = rest.nodes.iter().find(|n| n.id == "archive_plate").expect("plate");
