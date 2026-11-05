@@ -59,6 +59,9 @@ cargo run -p hiren-client --features layer-shell -- --validate-themes
 
 The command loads, resolves and renders each theme headlessly, prints per-theme warnings, and exits non-zero if a theme fails.
 
+`make test` runs `cargo test --workspace`; `make check` also runs `--validate-themes`
+and a `--screenshot` smoke test headlessly (no compositor or display required).
+
 ## Install
 
 ```bash
