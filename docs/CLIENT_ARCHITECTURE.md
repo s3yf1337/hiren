@@ -353,7 +353,10 @@ characters, `Backspace` (`Ctrl+Backspace` clears the query), `Escape` (close),
 `prefix` it is derived from `[terminal] command` + `exec_flag`), `↑/↓` move,
 `Home/End`, `PageUp/PageDown` (±6), `Tab` / `Shift+Tab` (`BackTab`) move the
 selection down/up — `Tab` does **not** do completions. Hover over a row selects
-it. `Terminal=true` entries are wrapped in the `[terminal]` command on a normal
+it, but only after the pointer has actually moved since the launcher opened:
+when the launcher appears under a stationary cursor, the selection stays on the
+first row (otherwise the row under the cursor would be selected instantly).
+Clicks work immediately — a click is an explicit action. `Terminal=true` entries are wrapped in the `[terminal]` command on a normal
 activation (and on `Ctrl+Return`); an explicit `[[bindings]] prefix` overrides
 that wrapper.
 
@@ -428,7 +431,9 @@ passed; falls back to winit if the compositor lacks `zwlr_layer_shell_v1`.
 - Hidpi: integer `wl_surface.set_buffer_scale` (compositor v6+); the frame
   rasterizes at physical size so text stays sharp.
 - Input: `xkb` keymap from `wl_keyboard.keymap` (raw FFI via `xkbcommon-dl`),
-  pointer motion → hover-select, left click → actions.
+  pointer motion after real movement → hover-select, left click → actions.
+  `wl_pointer.enter` only records the cursor anchor: a launcher opened under a
+  stationary cursor must not steal the selection.
 - Loop: `poll(2)` on the Wayland fd with a frame-sized timeout while animating;
   present gated on the `wl_surface.frame` callback (vsync); `blocking` when idle.
 

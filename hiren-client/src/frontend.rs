@@ -102,6 +102,14 @@ pub struct AppCore {
     /// Бэкенд должен немедленно отпустить эксклюзивный клавиатурный захват,
     /// чтобы запущенное приложение получило клавиатуру.
     release_grab: bool,
+    /// Первая позиция курсора, о которой сообщил бэкенд после запуска.
+    /// Нужна, чтобы отличить «окно появилось под неподвижным курсором» от
+    /// настоящего движения мыши: компоновщик присылает Enter/позицию сразу
+    /// при открытии слоя, и hover не должен из-за этого перескакивать на
+    /// строку под курсором.
+    hover_anchor: Option<(f64, f64)>,
+    /// Hover-выбор включается только после реального движения мыши.
+    hover_armed: bool,
 }
 
 impl AppCore {
@@ -141,6 +149,8 @@ impl AppCore {
             delay_exit: None,
             launch_errors: modes::new_launch_errors(),
             release_grab: false,
+            hover_anchor: None,
+            hover_armed: false,
         }
     }
 
@@ -380,9 +390,41 @@ impl AppCore {
         }
     }
 
+    /// Сообщить позицию курсора от бэкенда. Возвращает `true`, если hover-выбор
+    /// уже разрешён (мышь реально двигали после запуска лаунчера).
+    ///
+    /// Компоновщик присылает `wl_pointer.enter` (а winit — `CursorMoved`) сразу
+    /// при появлении поверхности; если курсор в этот момент стоял над списком,
+    /// наивный hover мгновенно выделял строку под курсором вместо первой.
+    /// Поэтому первая позиция только запоминается как якорь, а hover включается
+    /// лишь после смещения от неё (порог 1 px отсекает дребезг и нулевые
+    /// синтетические motion-события).
+    pub fn note_pointer(&mut self, x: f64, y: f64) -> bool {
+        const ARM_DISTANCE: f64 = 1.0;
+        let Some((anchor_x, anchor_y)) = self.hover_anchor else {
+            self.hover_anchor = Some((x, y));
+            return false;
+        };
+        if !self.hover_armed {
+            let dx = x - anchor_x;
+            let dy = y - anchor_y;
+            if dx * dx + dy * dy >= ARM_DISTANCE * ARM_DISTANCE {
+                self.hover_armed = true;
+            }
+        }
+        self.hover_armed
+    }
+
     /// Hover over a result node changes selection to it. Returns `true` when the
     /// selection actually changed (backends repaint only then).
+    ///
+    /// До первого реального движения мыши hover игнорируется (см.
+    /// [`AppCore::note_pointer`]); клики при этом работают как обычно — это
+    /// осознанное действие пользователя.
     pub fn handle_hover(&mut self, x: f64, y: f64) -> bool {
+        if !self.note_pointer(x, y) {
+            return false;
+        }
         if self.launching() {
             return false;
         }
@@ -632,9 +674,28 @@ mod tests {
     }
 
     #[test]
+    fn hover_is_ignored_until_the_pointer_actually_moves() {
+        let mut core = test_core();
+        // Окно появилось под неподвижным курсором: первая позиция — только
+        // якорь, hover ещё не должен выбирать.
+        assert!(!core.note_pointer(10.0, 10.0));
+        assert!(!core.handle_hover(10.0, 10.0));
+        // Синтетическое motion с нулевой дельтой (как у части компоновщиков).
+        assert!(!core.note_pointer(10.0, 10.0));
+        // Дребезг меньше порога тоже не взводит hover.
+        assert!(!core.note_pointer(10.4, 10.2));
+        // Реальное движение — hover разрешён и остаётся разрешённым.
+        assert!(core.note_pointer(12.0, 10.0));
+        assert!(core.note_pointer(12.0, 10.0));
+        assert!(core.note_pointer(50.0, 80.0));
+    }
+
+    #[test]
     fn hover_returns_whether_selection_changed() {
         let mut core = test_core();
-        // Без разрешённых нод ховер ничего не меняет.
+        // Без разрешённых нод ховер ничего не меняет (и не паникует).
+        assert!(!core.handle_hover(10.0, 10.0));
+        assert!(core.note_pointer(40.0, 40.0));
         assert!(!core.handle_hover(10.0, 10.0));
     }
 }
