@@ -484,15 +484,28 @@ fn find_theme_in(name: &str, roots: &[PathBuf], legacy: Option<&Path>) -> Option
     if !is_safe_theme_name(name) {
         return None;
     }
-    for root in roots {
-        let candidate = root.join(name);
+    // 1. Пользовательский каталог тем (~/.config/hiren/themes) — высший приоритет.
+    if let Some(first) = roots.first() {
+        let candidate = first.join(name);
         if theme_dir_has_manifest(&candidate) {
             return Some(candidate);
         }
     }
-    // Старый формат: ~/.config/hiren/theme.toml (по умолчанию называется default).
+    // 2. Старый формат: ~/.config/hiren/theme.toml (по умолчанию называется
+    //    `default`). Это пользовательский конфиг, поэтому он важнее
+    //    установленных/встроенных тем default (иначе обновление пакета молча
+    //    подменяет кастомизированную тему).
     if name == "default" {
-        return legacy.map(Path::to_path_buf);
+        if let Some(dir) = legacy {
+            return Some(dir.to_path_buf());
+        }
+    }
+    // 3. Установленные и встроенные темы.
+    for root in roots.iter().skip(1) {
+        let candidate = root.join(name);
+        if theme_dir_has_manifest(&candidate) {
+            return Some(candidate);
+        }
     }
     None
 }
@@ -514,29 +527,43 @@ pub fn available_theme_paths() -> Vec<(String, PathBuf)> {
     available_theme_paths_in(&roots, legacy.as_deref())
 }
 
+fn scan_theme_root(
+    root: &Path,
+    seen: &mut std::collections::HashSet<String>,
+    themes: &mut Vec<(String, PathBuf)>,
+) {
+    let Ok(entries) = fs::read_dir(root) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+        if !is_safe_theme_name(name) {
+            continue;
+        }
+        if seen.insert(name.to_string()) {
+            themes.push((name.to_string(), path));
+        }
+    }
+}
+
 fn available_theme_paths_in(roots: &[PathBuf], legacy: Option<&Path>) -> Vec<(String, PathBuf)> {
     let mut seen = std::collections::HashSet::new();
     let mut themes: Vec<(String, PathBuf)> = Vec::new();
-    for root in roots {
-        let Ok(entries) = fs::read_dir(root) else { continue };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
-            if !is_safe_theme_name(name) {
-                continue;
-            }
-            if seen.insert(name.to_string()) {
-                themes.push((name.to_string(), path));
-            }
-        }
+    // Приоритет как у find_theme_in: пользовательский каталог тем, затем
+    // legacy-файл ~/.config/hiren/theme.toml (под именем `default`), затем
+    // установленные и встроенные темы. Одноимённые записи не дублируются.
+    if let Some(first) = roots.first() {
+        scan_theme_root(first, &mut seen, &mut themes);
     }
     if let Some(legacy_dir) = legacy {
         if seen.insert("default".to_string()) {
             themes.push(("default".into(), legacy_dir.to_path_buf()));
         }
+    }
+    for root in roots.iter().skip(1) {
+        scan_theme_root(root, &mut seen, &mut themes);
     }
     themes.sort_by(|a, b| a.0.cmp(&b.0));
     themes
@@ -1030,6 +1057,54 @@ key = "Ctrl+Return"
             Some(config_base.join("hiren"))
         );
         assert_eq!(find_theme_in("other", &roots, legacy.as_deref()), None);
+    }
+
+    #[test]
+    fn legacy_default_outranks_installed_builtin_theme() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_base = tmp.path().join("config");
+        fs::create_dir_all(config_base.join("hiren")).unwrap();
+        fs::write(config_base.join("hiren/theme.toml"), "name = \"legacy\"\n").unwrap();
+        let legacy = legacy_theme_dir(Some(&config_base));
+        // Установленная встроенная тема default существует...
+        let installed = write_theme(&tmp.path().join("themes/default"));
+        let paths = search_paths(&config_base, tmp.path(), tmp.path(), tmp.path(), None);
+        let roots = theme_roots_from(&paths);
+        // ...но пользовательский legacy-файл всё равно побеждает: обновление
+        // пакета не должно молча подменять кастомизированную тему.
+        assert_eq!(
+            find_theme_in("default", &roots, legacy.as_deref()),
+            Some(config_base.join("hiren"))
+        );
+        assert_ne!(find_theme_in("default", &roots, legacy.as_deref()), Some(installed));
+    }
+
+    #[test]
+    fn explicit_user_default_theme_dir_beats_legacy_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_base = tmp.path().join("config");
+        fs::create_dir_all(config_base.join("hiren")).unwrap();
+        fs::write(config_base.join("hiren/theme.toml"), "name = \"legacy\"\n").unwrap();
+        let user_default = write_theme(&config_base.join("hiren/themes/default"));
+        let legacy = legacy_theme_dir(Some(&config_base));
+        let paths = search_paths(&config_base, tmp.path(), tmp.path(), tmp.path(), None);
+        let roots = theme_roots_from(&paths);
+        assert_eq!(find_theme_in("default", &roots, legacy.as_deref()), Some(user_default));
+    }
+
+    #[test]
+    fn available_theme_list_legacy_default_beats_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_base = tmp.path().join("config");
+        fs::create_dir_all(config_base.join("hiren")).unwrap();
+        fs::write(config_base.join("hiren/theme.toml"), "name = \"legacy\"\n").unwrap();
+        write_theme(&tmp.path().join("themes/default")); // installed built-in
+        let legacy = legacy_theme_dir(Some(&config_base));
+        let paths = search_paths(&config_base, tmp.path(), tmp.path(), tmp.path(), None);
+        let roots = theme_roots_from(&paths);
+        let themes = available_theme_paths_in(&roots, legacy.as_deref());
+        let default = themes.iter().find(|(n, _)| n == "default").expect("default listed");
+        assert_eq!(default.1, config_base.join("hiren"));
     }
 
     #[test]
