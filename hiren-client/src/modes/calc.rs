@@ -10,6 +10,12 @@ use hiren_shared::AppEntry;
 
 pub struct CalcMode;
 
+impl Default for CalcMode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CalcMode {
     pub fn new() -> Self {
         Self

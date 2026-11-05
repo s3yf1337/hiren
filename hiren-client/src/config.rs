@@ -113,12 +113,11 @@ fn cmd_exists_in_path(cmd: &str, path_var: &str) -> bool {
     false
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct WindowConfig {
     pub list_command: Option<String>,
     pub activate_command: Option<String>,
 }
-impl Default for WindowConfig { fn default() -> Self { Self { list_command: None, activate_command: None } } }
 
 #[derive(Debug, Clone)]
 pub struct LauncherConfig {

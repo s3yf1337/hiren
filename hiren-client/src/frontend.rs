@@ -244,11 +244,9 @@ impl AppCore {
     /// Resolve + render the current frame; returns resolved nodes.
     pub fn render_frame(&mut self, scale: f32) -> &[ResolvedNode] {
         let out = self.runtime.render_frame(self.size, scale);
-        if self.reload {
-            if self.runtime.try_reload(true) {
-                // Re-resolve with the fresh theme on the next frame.
-                self.size = self.runtime.theme().window.effective_size((self.config.window_width.max(1) as u32, self.config.window_height.max(1) as u32));
-            }
+        if self.reload && self.runtime.try_reload(true) {
+            // Re-resolve with the fresh theme on the next frame.
+            self.size = self.runtime.theme().window.effective_size((self.config.window_width.max(1) as u32, self.config.window_height.max(1) as u32));
         }
         for w in self.runtime.take_warnings() {
             log::warn!("theme binding: {w}");

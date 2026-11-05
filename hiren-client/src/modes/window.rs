@@ -24,6 +24,12 @@ pub struct WindowMode {
     wm_type: WmType,
 }
 
+impl Default for WindowMode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WindowMode {
     pub fn new() -> Self {
         Self {

@@ -16,6 +16,12 @@ pub struct RunMode {
     is_initialized: bool,
 }
 
+impl Default for RunMode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RunMode {
     pub fn new() -> Self {
         Self {

@@ -6,6 +6,12 @@ use hiren_shared::AppEntry;
 
 pub struct DrunMode;
 
+impl Default for DrunMode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DrunMode {
     pub fn new() -> Self {
         Self
