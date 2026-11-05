@@ -13,7 +13,7 @@ Wayland-native application launcher for Linux — now with a fully declarative U
 - **Independent selector** — selection indicator is its own visual object, not a row state
 - **Expressive animations** — real damped springs, easings, enter animations with per-item stagger, rotation/scale transforms
 - **Fast** — list virtualization, expression/text caches, vsync-paced rendering, zero CPU when idle
-- **Themes** — five built-in, radically different themes; user themes in `~/.config/hiren/themes/`
+- **Themes** — five radically different built-in themes; user themes in `~/.config/hiren/themes/`
 
 ## Architecture
 

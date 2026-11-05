@@ -308,8 +308,8 @@ A property value is either a **literal** (`x = 32`, `text = "Firefox"`) or an
 
 - `vertical` — flowing list (`item_height` + `gap`)
 - `circular` — items placed on a ring: `angle = index/count * tau - pi/2`, `radius`;
-  slot angles and window centering are computed with the correct wrapped ring
-  position (the old off-by-one window math is fixed)
+  the sliding window stays centered on the selection but spreads its slots
+  around the full circle (the old clamp collapsed them into a small arc)
 - `row` — horizontal (delegates position themselves; scissored)
 - `free` — no automatic offset, no scissor (decorative scatter; delegates place themselves)
 
