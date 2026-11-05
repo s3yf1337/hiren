@@ -102,7 +102,7 @@ No GTK4 or other heavy runtime is required.
 | Option | Meaning |
 |---|---|
 | `--theme <name>` | select a theme (built-in or user) for this run |
-| `--width <px> --height <px>` | override the window size; both values are required together and are clamped to `1..=8192` |
+| `--width <px> --height <px>` | override the window size; both values are required together (a single one is ignored with a warning) and are clamped to `1..=8192` |
 | `--list-themes` | print every discoverable theme name |
 | `--validate-themes` | load + resolve + render all discovered themes (bundled, user, installed); report warnings/failures |
 | `--screenshot [THEME] --out FILE [--query Q] [--settle-ms N]` | headless render to PNG (`--screenshot=THEME` is equivalent). `THEME` is optional (defaults to the config theme); if the next argument starts with `--` it is left alone, so `--screenshot --out x.png` works. `--out` defaults to `/tmp/hiren-<theme>.png`; `--settle-ms` defaults to 900. A missing theme is an error and writes no PNG |
