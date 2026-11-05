@@ -2,7 +2,9 @@
 //!
 //! Supported syntaxes (after binding evaluation):
 //!   `#rgb` `#rrggbb` `#rrggbbaa`
-//!   `rgb(r,g,b)` / `rgba(r,g,b,a)` — `a` may be 0..1 float or 0..255
+//!   `rgb(r,g,b)` / `rgba(r,g,b,a)` — `a` is a 0..1 fraction when `<= 1.0`
+//!   (so `rgba(0,0,0,1)` is opaque, CSS-style) and a 0..255 byte when `> 1`
+//!   (`rgba(0,0,0,128)` ≈ 50%)
 //!   `transparent`, `white`, `black`
 
 pub type Color = (u8, u8, u8, u8);
@@ -65,24 +67,19 @@ fn parse_channels(inner: &str, has_alpha: bool) -> Option<Color> {
     Some((r, g, b, a))
 }
 
+/// Alpha channel: `<= 1.0` is a CSS-style fraction (1.0 = opaque), values
+/// above 1 are a 0..255 byte. The old "contains a dot means fraction" rule
+/// made the authoring form `rgba(0,0,0,1)` parse as 1/255 = nearly invisible.
 fn alpha_channel(s: &str) -> Option<u8> {
-    if s.contains('.') {
-        let a: f32 = s.parse().ok()?;
-        Some((a.clamp(0.0, 1.0) * 255.0).round() as u8)
-    } else {
-        s.parse().ok()
+    let value: f32 = s.trim().parse().ok()?;
+    if !value.is_finite() {
+        return None;
     }
-}
-
-/// Premultiply a color (tiny-skia expects premultiplied for direct pixel writes).
-pub fn to_premultiplied(c: Color) -> Color {
-    let a = c.3 as u32;
-    (
-        ((c.0 as u32 * a + 127) / 255) as u8,
-        ((c.1 as u32 * a + 127) / 255) as u8,
-        ((c.2 as u32 * a + 127) / 255) as u8,
-        c.3,
-    )
+    if value <= 1.0 {
+        Some((value.clamp(0.0, 1.0) * 255.0).round() as u8)
+    } else {
+        Some(value.clamp(0.0, 255.0).round() as u8)
+    }
 }
 
 #[cfg(test)]
@@ -101,6 +98,20 @@ mod tests {
         assert_eq!(parse_color_str("rgba(255,42,109,0.5)"), Some((255, 42, 109, 128)));
         assert_eq!(parse_color_str("rgba(255,42,109,128)"), Some((255, 42, 109, 128)));
         assert_eq!(parse_color_str("rgb(1,2,3)"), Some((1, 2, 3, 255)));
+    }
+
+    #[test]
+    fn alpha_one_is_opaque_not_one_byte() {
+        // CSS semantics: 1 = fully opaque. Previously parsed as 1/255.
+        assert_eq!(parse_color_str("rgba(0,0,0,1)"), Some((0, 0, 0, 255)));
+        assert_eq!(parse_color_str("rgba(0,0,0,1.0)"), Some((0, 0, 0, 255)));
+        assert_eq!(parse_color_str("rgba(0,0,0,0)"), Some((0, 0, 0, 0)));
+        assert_eq!(parse_color_str("rgba(0,0,0,0.25)"), Some((0, 0, 0, 64)));
+        // > 1 is a byte value (the old dual 0..1/0..255 authoring rule).
+        assert_eq!(parse_color_str("rgba(0,0,0,2)"), Some((0, 0, 0, 2)));
+        assert_eq!(parse_color_str("rgba(0,0,0,255)"), Some((0, 0, 0, 255)));
+        assert_eq!(parse_color_str("rgba(0,0,0,256)"), Some((0, 0, 0, 255)));
+        assert_eq!(parse_color_str("rgba(0,0,0,NaN)"), None);
     }
 
     #[test]

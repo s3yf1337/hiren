@@ -27,9 +27,28 @@ use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, PixmapPaint, Premultiplied
 
 use super::color::Color;
 
+/// Smallest font size the engine will shape. cosmic-text panics on a zero line
+/// height and never returns from shaping negative sizes, so every entry point
+/// clamps into this range before touching the shaper.
+pub const MIN_FONT_SIZE: f32 = 0.5;
+/// Largest accepted font size. Bigger values are authoring mistakes and would
+/// allocate absurd pixmaps; they are clamped rather than honoured.
+pub const MAX_FONT_SIZE: f32 = 4096.0;
+
+/// Validate/clamp a requested font size. `None` means the value cannot be
+/// rendered at all (NaN/inf); finite values are clamped into
+/// `MIN_FONT_SIZE..=MAX_FONT_SIZE` so theme/binding data can never panic or
+/// hang cosmic-text (`font_size = "0"` used to abort the whole launcher).
+pub fn sanitize_font_size(size: f32) -> Option<f32> {
+    if !size.is_finite() {
+        return None;
+    }
+    Some(size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE))
+}
+
 /// Extra glyph styling (all optional). Widths/offsets are in the same units as
 /// the size argument passed to `render` (physical pixels there).
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TextStyle {
     /// Font family name; empty = default sans-serif.
     pub family: String,
@@ -45,6 +64,26 @@ pub struct TextStyle {
     pub ransom_paper: Option<Color>,
     /// Single-line layout (`wrap = "none"`). Default is word wrap to the box.
     pub nowrap: bool,
+    /// Physical/logical pixel ratio this text is rasterized for (HiDPI buffer
+    /// scale). Sizes/offsets passed to `render` are already physical; this
+    /// only scales the engine's own logical constants (ransom paper padding,
+    /// serif margin fallback) so effects keep their authored visual weight.
+    pub scale: f32,
+}
+
+impl Default for TextStyle {
+    fn default() -> Self {
+        Self {
+            family: String::new(),
+            outline: None,
+            hard_shadow: None,
+            ransom: false,
+            ransom_fonts: Vec::new(),
+            ransom_paper: None,
+            nowrap: false,
+            scale: 1.0,
+        }
+    }
 }
 
 impl TextStyle {
@@ -60,6 +99,15 @@ impl TextStyle {
         m.ceil() + 1.0
     }
 
+    /// Buffer scale, clamped to something sane (0 would zero every constant).
+    fn screen_scale(&self) -> f32 {
+        if self.scale.is_finite() && self.scale >= 0.25 {
+            self.scale.clamp(0.25, 8.0)
+        } else {
+            1.0
+        }
+    }
+
     /// Build a style from theme props (helper for the renderer).
     pub fn new(family: &str, outline: Option<(f32, Color)>, hard_shadow: Option<(f32, f32, Color)>) -> Self {
         Self {
@@ -70,6 +118,7 @@ impl TextStyle {
             ransom_fonts: Vec::new(),
             ransom_paper: None,
             nowrap: false,
+            scale: 1.0,
         }
     }
 }
@@ -77,11 +126,110 @@ impl TextStyle {
 struct Inner {
     font_system: RefCell<Option<FontSystem>>,
     swash: RefCell<Option<SwashCache>>,
-    measure_cache: RefCell<HashMap<(String, u32, u16, String), f32>>,
+    measure_cache: RefCell<MeasureCache>,
     /// Rasterized text pixmaps: shaping + glyph blitting dominates frame time,
-    /// and most text is identical across frames. Key quantizes geometry.
-    pixmap_cache: RefCell<HashMap<(String, u32, u32, u32, u16, u8, [u8; 4], String, TextStyleKey), Option<(Pixmap, u32)>>>,
+    /// and most text is identical across frames.
+    pixmap_cache: RefCell<PixmapCache>,
+    /// Shaped ransom plans (per-letter mix is deterministic for a given
+    /// text/size/font list, so re-planning every frame in `text_width` was
+    /// pure waste).
+    ransom_cache: RefCell<HashMap<(String, u32, String), Rc<Vec<RansomGlyph>>>>,
+    /// (requested family, requested weight) → (concrete family to use, weight
+    /// that family actually ships). See `resolve_face`.
+    face_cache: RefCell<HashMap<(String, u16), (Option<String>, u16)>>,
     loaded_fonts: RefCell<HashSet<PathBuf>>,
+}
+
+/// Key of the measurement cache: (text, quantized size, weight, family).
+type MeasureKey = (String, u32, u16, String);
+
+/// Bounded measurement cache. One entry per distinct control/query string;
+/// a long-lived typing session would otherwise grow it without limit.
+#[derive(Default)]
+struct MeasureCache {
+    map: HashMap<MeasureKey, f32>,
+}
+
+const MEASURE_CACHE_MAX_ENTRIES: usize = 4096;
+
+impl MeasureCache {
+    fn get(&self, key: &MeasureKey) -> Option<f32> {
+        self.map.get(key).copied()
+    }
+
+    fn insert(&mut self, key: MeasureKey, value: f32) {
+        if self.map.len() >= MEASURE_CACHE_MAX_ENTRIES {
+            self.map.clear();
+        }
+        self.map.insert(key, value);
+    }
+
+    fn clear(&mut self) {
+        self.map.clear();
+    }
+}
+
+/// Key of the raster cache: (text, integer box w, integer box h, quantized
+/// size, weight, alignment tag, colour, family, style bits). Box dimensions
+/// are keyed as the integer pixel size the pixmap is actually allocated at,
+/// so a fractional spring width can never hit a raster of a different width.
+type PixmapKey = (String, u32, u32, u32, u16, u8, [u8; 4], String, TextStyleKey);
+
+/// One cached raster. `None` records "this text cannot render" (e.g. empty
+/// after shaping) so repeated frames do not re-shape it.
+struct PixmapCacheEntry {
+    value: Option<(Pixmap, f32)>,
+    bytes: usize,
+}
+
+/// Byte-bounded FIFO raster cache. Entry count alone allowed ~240 MB of
+/// display-size rasters at 2x; the budget below keeps the steady state small
+/// (~24 MB) and evicts whole rasters instead of clearing everything at once.
+#[derive(Default)]
+struct PixmapCache {
+    map: HashMap<PixmapKey, PixmapCacheEntry>,
+    order: std::collections::VecDeque<PixmapKey>,
+    bytes: usize,
+}
+
+const PIXMAP_CACHE_MAX_BYTES: usize = 24 * 1024 * 1024;
+/// Single rasters above this are not worth caching (they are one-off display
+/// frames); they are still rendered.
+const PIXMAP_CACHE_MAX_ENTRY_BYTES: usize = 2 * 1024 * 1024;
+
+impl PixmapCache {
+    fn get(&self, key: &PixmapKey) -> Option<&Option<(Pixmap, f32)>> {
+        self.map.get(key).map(|entry| &entry.value)
+    }
+
+    fn insert(&mut self, key: PixmapKey, value: Option<(Pixmap, f32)>) {
+        let bytes = value.as_ref().map_or(0, |(pm, _)| pm.data().len());
+        if let Some(old) = self.map.remove(&key) {
+            self.bytes = self.bytes.saturating_sub(old.bytes);
+        }
+        if bytes > PIXMAP_CACHE_MAX_ENTRY_BYTES {
+            return;
+        }
+        while self.bytes + bytes > PIXMAP_CACHE_MAX_BYTES {
+            let Some(oldest) = self.order.pop_front() else {
+                self.map.clear();
+                self.bytes = 0;
+                break;
+            };
+            if let Some(entry) = self.map.remove(&oldest) {
+                self.bytes = self.bytes.saturating_sub(entry.bytes);
+            }
+        }
+        self.map.insert(key.clone(), PixmapCacheEntry { value, bytes });
+        self.order.push_back(key);
+        self.bytes += bytes;
+    }
+
+    fn clear(&mut self) {
+        self.map.clear();
+        self.order.clear();
+        self.bytes = 0;
+    }
 }
 
 /// Cacheable subset of TextStyle (f32 widths quantized).
@@ -93,6 +241,7 @@ struct TextStyleKey {
     ransom_fonts: String,
     paper: Option<[u8; 4]>,
     nowrap: bool,
+    scale: u16,
 }
 
 impl TextStyleKey {
@@ -106,6 +255,7 @@ impl TextStyleKey {
             ransom_fonts: style.ransom_fonts.join("|"),
             paper: style.ransom_paper.map(|c| [c.0, c.1, c.2, c.3]),
             nowrap: style.nowrap,
+            scale: (style.screen_scale() * 100.0).round() as u16,
         }
     }
 }
@@ -128,8 +278,10 @@ impl TextEngine {
             inner: Rc::new(Inner {
                 font_system: RefCell::new(None),
                 swash: RefCell::new(None),
-                measure_cache: RefCell::new(HashMap::new()),
-                pixmap_cache: RefCell::new(HashMap::new()),
+                measure_cache: RefCell::new(MeasureCache::default()),
+                pixmap_cache: RefCell::new(PixmapCache::default()),
+                ransom_cache: RefCell::new(HashMap::new()),
+                face_cache: RefCell::new(HashMap::new()),
                 loaded_fonts: RefCell::new(HashSet::new()),
             }),
         }
@@ -139,6 +291,8 @@ impl TextEngine {
     pub fn clear_caches(&self) {
         self.inner.measure_cache.borrow_mut().clear();
         self.inner.pixmap_cache.borrow_mut().clear();
+        self.inner.ransom_cache.borrow_mut().clear();
+        self.inner.face_cache.borrow_mut().clear();
     }
 
     /// Load `dir/fonts/*.{ttf,otf,ttc}` into the shared FontSystem. Safe to
@@ -193,6 +347,11 @@ impl TextEngine {
         self.inner.font_system.borrow().is_some()
     }
 
+    /// Weight token accepted by themes (`font_weight`, 4th `text_width` arg).
+    pub fn weight_of_str(s: &str) -> Weight {
+        Self::weight_from(s)
+    }
+
     fn weight_from(s: &str) -> Weight {
         match s {
             "100" | "thin" => Weight::THIN,
@@ -233,7 +392,29 @@ impl TextEngine {
         )
     }
 
+    /// Resolve a requested `(family, weight)` to a face the loaded font
+    /// database actually ships. cosmic-text's fallback only accepts an *exact*
+    /// weight within a family; any other value silently abandons the family
+    /// for an unrelated fallback (default theme w500 → Noto Sans, atlus
+    /// Playfair w400 → Noto Sans). Snapping to the nearest available weight
+    /// keeps the requested typeface; an empty family resolves the system
+    /// sans-serif generic to its concrete family first.
+    fn resolve_face_cached(&self, fs: &FontSystem, family: &str, weight: Weight) -> (Option<String>, Weight) {
+        let key = (family.to_string(), weight.0);
+        if let Some((name, w)) = self.inner.face_cache.borrow().get(&key) {
+            return (name.clone(), Weight(*w));
+        }
+        let resolved = resolve_face(fs, family, weight);
+        let mut cache = self.inner.face_cache.borrow_mut();
+        if cache.len() >= 4096 {
+            cache.clear();
+        }
+        cache.insert(key, (resolved.0.clone(), resolved.1.0));
+        resolved
+    }
+
     fn make_buffer(
+        &self,
         fs: &mut FontSystem,
         text: &str,
         size: f32,
@@ -241,16 +422,20 @@ impl TextEngine {
         family: &str,
         nowrap: bool,
     ) -> Buffer {
+        // Defence in depth: public entry points sanitize, but cosmic-text
+        // panics on a zero line height, so never hand it an unsanitized size.
+        let size = sanitize_font_size(size).unwrap_or(MIN_FONT_SIZE);
         // Wrapped UI copy uses 1.35 so two lines fit a theme box. Nowrap
         // display (stacked H1s) authors a box ≈ em-square; 1.35 then clips
         // the bottom ~20% of the glyph — didone hairlines vanish first.
         let line_height = if nowrap { size } else { size * 1.35 };
         let metrics = Metrics::new(size, line_height);
         let mut buffer = Buffer::new(fs, metrics);
-        let attrs = if family.is_empty() {
-            Attrs::new().family(Family::SansSerif)
-        } else {
-            Attrs::new().family(Family::Name(family))
+        let (resolved_family, weight) = self.resolve_face_cached(fs, family, weight);
+        let attrs = match &resolved_family {
+            Some(name) => Attrs::new().family(Family::Name(name)),
+            None if family.is_empty() => Attrs::new().family(Family::SansSerif),
+            None => Attrs::new().family(Family::Name(family)),
         };
         let attrs = attrs.weight(weight);
         buffer.set_text(fs, text, &attrs, Shaping::Advanced);
@@ -263,26 +448,45 @@ impl TextEngine {
         if text.is_empty() {
             return 0.0;
         }
+        let Some(size) = sanitize_font_size(size) else {
+            return 0.0;
+        };
         if family.contains(',') {
             return self.measure_ransom(text, size, &parse_font_list(family));
         }
         let key = (text.to_string(), (size * 4.0).round() as u32, weight.0, family.to_string());
         if let Some(w) = self.inner.measure_cache.borrow().get(&key) {
-            return *w;
+            return w;
         }
         let mut fs_guard = self.inner.font_system.borrow_mut();
         let fs = fs_guard.get_or_insert_with(FontSystem::new);
-        let mut buffer = Self::make_buffer(fs, text, size, weight, family, false);
+        let mut buffer = self.make_buffer(fs, text, size, weight, family, false);
         buffer.set_wrap(fs, Wrap::None);
         buffer.set_size(fs, None, None);
         buffer.shape_until_scroll(fs, false);
         let w = buffer.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0);
+        drop(fs_guard);
         self.inner.measure_cache.borrow_mut().insert(key, w);
         w
     }
 
     fn measure_ransom(&self, text: &str, size: f32, fonts: &[String]) -> f32 {
-        self.plan_ransom(text, size, fonts).iter().map(|g| g.advance).sum()
+        self.ransom_plan(text, size, fonts).iter().map(|g| g.advance).sum()
+    }
+
+    /// Cached ransom plan (deterministic per text/size/font list).
+    fn ransom_plan(&self, text: &str, size: f32, fonts: &[String]) -> Rc<Vec<RansomGlyph>> {
+        let key = (text.to_string(), (size * 4.0).round() as u32, fonts.join("|"));
+        if let Some(hit) = self.inner.ransom_cache.borrow().get(&key) {
+            return hit.clone();
+        }
+        let plan = Rc::new(self.plan_ransom(text, size, fonts));
+        let mut cache = self.inner.ransom_cache.borrow_mut();
+        if cache.len() >= 256 {
+            cache.clear();
+        }
+        cache.insert(key, plan.clone());
+        plan
     }
 
     /// Convenience used by the binding engine's `text_width(expr, size)`.
@@ -303,23 +507,27 @@ impl TextEngine {
         color: Color,
         style: &TextStyle,
     ) -> Option<(Pixmap, f32)> {
-        if text.is_empty() || w < 2.0 || h < 2.0 {
+        if text.is_empty() || !w.is_finite() || !h.is_finite() || w < 2.0 || h < 2.0 || w > 65536.0 || h > 65536.0 {
             return None;
         }
-        let mut margin = style.margin();
-        if style.ransom {
+        let size = sanitize_font_size(size)?;
+        // Base margin from the explicit style effects. Nowrap display type can
+        // need more: render_uncached derives the rest from the real shaped
+        // glyph extents and returns the exact integer padding it used.
+        let margin = if style.ransom {
             // Rotated per-letter scraps spill past the box.
-            margin = margin.max(12.0);
-        } else if style.nowrap {
-            // Serifs and glyph bearings sit outside the em square; the
-            // compositor subtracts this margin so layout origin is unchanged.
-            margin = margin.max(8.0);
-        }
-        // Quantized cache key: same text + box + style → same pixmap.
+            style.margin().max(12.0 * style.screen_scale())
+        } else {
+            style.margin()
+        };
+        // Same text + integer box + style → same pixmap. The box is keyed by
+        // the integer pixel dimensions the raster is allocated at (ceil), so
+        // fractional spring widths cannot collide with a differently-sized
+        // raster; cache hits and misses return the identical margin.
         let key = (
             text.to_string(),
-            (w * 2.0).round() as u32,
-            (h * 2.0).round() as u32,
+            w.ceil() as u32,
+            h.ceil() as u32,
             (size * 4.0).round() as u32,
             weight.0,
             align.bytes().next().unwrap_or(b'l'),
@@ -328,7 +536,7 @@ impl TextEngine {
             TextStyleKey::of(style),
         );
         if let Some(hit) = self.inner.pixmap_cache.borrow().get(&key) {
-            return hit.clone().map(|(pm, mq)| (pm, mq as f32 / 4.0));
+            return hit.clone();
         }
 
         let rendered = if style.ransom {
@@ -336,18 +544,7 @@ impl TextEngine {
         } else {
             self.render_uncached(text, w, h, size, weight, align, color, style, margin)
         };
-        {
-            let mut cache = self.inner.pixmap_cache.borrow_mut();
-            if cache.len() > 512 {
-                cache.clear();
-            }
-            cache.insert(
-                key,
-                rendered
-                    .clone()
-                    .map(|(pm, m)| (pm, (m * 4.0).round() as u32)),
-            );
-        }
+        self.inner.pixmap_cache.borrow_mut().insert(key, rendered.clone());
         rendered
     }
 
@@ -371,21 +568,16 @@ impl TextEngine {
         if text.is_empty() || w < 2.0 || h < 2.0 {
             return None;
         }
+        let size = sanitize_font_size(size)?;
         let mut fs_guard = self.inner.font_system.borrow_mut();
         let fs = fs_guard.get_or_insert_with(FontSystem::new);
-        let mut buffer = Self::make_buffer(fs, text, size, weight, &style.family, style.nowrap);
+        let mut buffer = self.make_buffer(fs, text, size, weight, &style.family, style.nowrap);
         buffer.set_size(fs, Some(w), None);
         buffer.set_wrap(fs, if style.nowrap { Wrap::None } else { Wrap::Word });
         buffer.shape_until_scroll(fs, false);
 
         let runs: Vec<_> = buffer.layout_runs().collect();
         let total_h: f32 = runs.iter().map(|r| r.line_height).sum();
-        let overflow = if style.nowrap {
-            ((total_h - h) / 2.0).max(0.0)
-        } else {
-            0.0
-        };
-        let margin = margin.max(overflow + if style.nowrap { 4.0 } else { 0.0 });
         let offset_y = if style.nowrap {
             (h - total_h) / 2.0
         } else {
@@ -395,11 +587,34 @@ impl TextEngine {
         let mut swash_guard = self.inner.swash.borrow_mut();
         let swash = swash_guard.get_or_insert_with(SwashCache::new);
 
-        let m = margin as i32;
-        let mut pm = Pixmap::new((w.ceil() as u32) + (m.max(0) as u32) * 2, (h.ceil() as u32) + (m.max(0) as u32) * 2)?;
-        blit_layout(
-            &mut pm, fs, swash, &runs, w, offset_y, m, align, color, style, false,
-        );
+        // Nowrap display type is typically authored in an em-square box, but
+        // glyph ink (ascent+descent, didone overshoot and serifs) is taller
+        // than one em. Derive the margin from the real raster extents so a
+        // 148 px display serif is never clipped — a fixed 8 px pad lost ~5%
+        // of the ink at that size and got proportionally worse as size grew.
+        let mut margin = margin;
+        if style.nowrap {
+            let needed = match ink_extent_y(fs, swash, &runs) {
+                Some((ink_top, ink_bottom)) => {
+                    let top_overflow = -(offset_y + ink_top);
+                    let bottom_overflow = (offset_y + ink_bottom) - h;
+                    top_overflow.max(bottom_overflow).max(0.0)
+                }
+                // No ink extents available: fall back to an em-proportional
+                // pad rather than the old absolute constant.
+                None => size * 0.3,
+            };
+            // +1 px covers integer truncation in the blitter.
+            margin = margin.max(needed.ceil() + 1.0).max(4.0 * style.screen_scale());
+        }
+
+        let m = margin.ceil() as i32;
+        let margin = m as f32; // canonical: padding and returned margin agree
+        let mut pm = Pixmap::new(
+            (w.ceil() as u32) + (m.max(0) as u32) * 2,
+            (h.ceil() as u32) + (m.max(0) as u32) * 2,
+        )?;
+        blit_layout(&mut pm, fs, swash, &runs, w, offset_y, m, align, color, style);
         Some((pm, margin))
     }
 
@@ -415,11 +630,14 @@ impl TextEngine {
         style: &TextStyle,
         margin: f32,
     ) -> Option<(Pixmap, f32)> {
+        let size = sanitize_font_size(size)?;
+        let scale = style.screen_scale();
         let fonts = ransom_font_list(style);
-        let glyphs = self.plan_ransom(text, size, &fonts);
+        let glyphs = self.ransom_plan(text, size, &fonts);
         if glyphs.is_empty() {
             return None;
         }
+        let margin = margin.max(12.0 * scale);
         let total_w: f32 = glyphs.iter().map(|g| g.advance).sum();
         let start_x = match align {
             "center" | "middle" => ((w - total_w) / 2.0).max(0.0),
@@ -427,7 +645,8 @@ impl TextEngine {
             _ => 0.0,
         };
 
-        let m = margin as i32;
+        let m = margin.ceil() as i32;
+        let margin = m as f32; // canonical: padding and returned margin agree
         let mut dest = Pixmap::new(
             (w.ceil() as u32) + (m.max(0) as u32) * 2,
             (h.ceil() as u32) + (m.max(0) as u32) * 2,
@@ -461,21 +680,21 @@ impl TextEngine {
             );
         }
 
-        for g in &glyphs {
+        for g in glyphs.iter() {
             if g.ink_w < 1.0 {
                 cursor += g.advance;
                 continue;
             }
             // Pad past the ink: rotation + didone serifs were clipping off
             // half the glyph, which read as "missing pixels".
-            let pad = 6.0;
-            let box_w = (g.ink_w + pad * 2.0).max(12.0);
-            let box_h = (g.size * 1.5 + pad).max(12.0);
+            let pad = 6.0 * scale;
+            let box_w = (g.ink_w + pad * 2.0).max(12.0 * scale);
+            let box_h = (g.size * 1.5 + pad).max(12.0 * scale);
             let Some(mut letter) = Pixmap::new(box_w.ceil() as u32, box_h.ceil() as u32) else {
                 cursor += g.advance;
                 continue;
             };
-            let mut buffer = Self::make_buffer(fs, &g.ch, g.size, g.weight, &g.family, true);
+            let mut buffer = self.make_buffer(fs, &g.ch, g.size, g.weight, &g.family, true);
             buffer.set_wrap(fs, Wrap::None);
             buffer.shape_until_scroll(fs, false);
             let runs: Vec<_> = buffer.layout_runs().collect();
@@ -493,7 +712,6 @@ impl TextEngine {
                 "center",
                 color,
                 &ink_style,
-                false,
             );
             let dest_x = margin + cursor;
             let max_y = ((h + margin * 2.0) - box_h).max(0.0);
@@ -621,6 +839,53 @@ struct RansomGlyph {
     advance: f32,
     hash: u32,
     lower: bool,
+}
+
+/// See [`TextEngine::resolve_face_cached`]. Returns the concrete family to
+/// shape with (`None` = keep the original request) and the weight that family
+/// actually has. Without this, cosmic-text swaps the whole family whenever the
+/// exact requested weight is missing.
+fn resolve_face(fs: &FontSystem, family: &str, weight: Weight) -> (Option<String>, Weight) {
+    let name: Option<String> = if family.is_empty() {
+        let generic = fs.db().family_name(&Family::SansSerif).to_string();
+        (!generic.is_empty()).then_some(generic)
+    } else {
+        Some(family.to_string())
+    };
+    let Some(name) = name else {
+        return (None, weight);
+    };
+    let mut best: Option<(u16, u16)> = None; // (weight distance, available weight)
+    let mut saw_family = false;
+    for face in fs.db().faces() {
+        if face.style != cosmic_text::fontdb::Style::Normal {
+            continue;
+        }
+        if !face.families.iter().any(|(f, _)| f.eq_ignore_ascii_case(&name)) {
+            continue;
+        }
+        saw_family = true;
+        let available = face.weight.0;
+        if available == weight.0 {
+            return (Some(name), weight);
+        }
+        let diff = available.abs_diff(weight.0);
+        // Prefer the lighter face on a tie (CSS: target 500 → 400 before 600).
+        let better = match best {
+            None => true,
+            Some((best_diff, best_weight)) => diff < best_diff || (diff == best_diff && available < best_weight),
+        };
+        if better {
+            best = Some((diff, available));
+        }
+    }
+    if !saw_family {
+        return (None, weight);
+    }
+    match best {
+        Some((_, available)) => (Some(name), Weight(available)),
+        None => (None, weight),
+    }
 }
 
 fn parse_font_list(s: &str) -> Vec<String> {
@@ -841,6 +1106,38 @@ fn fill_cut_ribbon(pm: &mut Pixmap, tops: &[(f32, f32)], bots: &[(f32, f32)], co
     pm.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
 }
 
+/// Vertical ink extent `(top, bottom)` of the shaped runs, relative to the
+/// top of the text block, using the real swash raster bounds. Used to size the
+/// nowrap margin from actual glyph ink instead of a fixed pixel pad.
+fn ink_extent_y(
+    fs: &mut FontSystem,
+    swash: &mut SwashCache,
+    runs: &[cosmic_text::LayoutRun<'_>],
+) -> Option<(f32, f32)> {
+    let mut top = f32::INFINITY;
+    let mut bottom = f32::NEG_INFINITY;
+    for run in runs {
+        for glyph in run.glyphs.iter() {
+            if glyph.glyph_id == 0 {
+                continue; // missing glyph: no raster to measure
+            }
+            let physical = glyph.physical((0.0, 0.0), 1.0);
+            let Some(image) = swash.get_image(fs, physical.cache_key) else {
+                continue;
+            };
+            let glyph_top = run.line_y + physical.y as f32 - image.placement.top as f32;
+            let glyph_bottom = glyph_top + image.placement.height as f32;
+            top = top.min(glyph_top);
+            bottom = bottom.max(glyph_bottom);
+        }
+    }
+    if top.is_finite() && bottom.is_finite() && bottom > top {
+        Some((top, bottom))
+    } else {
+        None
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn blit_layout(
     pm: &mut Pixmap,
@@ -853,7 +1150,6 @@ fn blit_layout(
     align: &str,
     color: Color,
     style: &TextStyle,
-    hard_cut: bool,
 ) {
     let (pm_w, pm_h) = (pm.width() as i32, pm.height() as i32);
     let pixels = pm.pixels_mut();
@@ -877,27 +1173,26 @@ fn blit_layout(
                         if x < 0 || y < 0 || x >= pm_w || y >= pm_h {
                             return;
                         }
-                        let alpha = ((pc.a() as u32 * color.3 as u32) / 255) as u8;
+                        // Premultiplied coverage mask: glyph coverage times
+                        // the pass colour's alpha. Anti-aliased edges and
+                        // translucent theme text (rgba(...,0.25) watermarks,
+                        // dim placeholders) must keep their partial alpha —
+                        // a binary alpha=255 mask destroys AA and makes every
+                        // translucent colour opaque.
+                        let alpha = ((pc.a() as u32 * pass_color.3 as u32) / 255) as u8;
                         if alpha == 0 {
                             return;
                         }
-                        // Magazine scraps: keep paper in the counters. AA
-                        // overwrite was filling holes with grey "ink".
-                        // Threshold 96 (not 200): didone/serif hairlines are
-                        // almost entirely AA, so 200 left a 5px speck.
-                        if hard_cut && alpha < 64 {
+                        let Some(prem) = PremultipliedColorU8::from_rgba(
+                            ((pass_color.0 as u32 * alpha as u32) / 255) as u8,
+                            ((pass_color.1 as u32 * alpha as u32) / 255) as u8,
+                            ((pass_color.2 as u32 * alpha as u32) / 255) as u8,
+                            alpha,
+                        ) else {
                             return;
-                        }
+                        };
                         if let Some(dst) = pixels.get_mut((y as u32 * pm_w as u32 + x as u32) as usize) {
-                            // Coverage is a mask, not glass. SourceOver of 40%
-                            // white onto #0000F2 is (98,98,243) — the hairline
-                            // vanishes and letters look half-erased.
-                            if hard_cut || alpha >= 18 {
-                                *dst = PremultipliedColorU8::from_rgba(
-                                    pass_color.0, pass_color.1, pass_color.2, 255,
-                                )
-                                .unwrap_or(*dst);
-                            }
+                            *dst = prem;
                         }
                     });
                 }
@@ -931,10 +1226,6 @@ mod tests {
 
     fn atlus_fonts_dir() -> std::path::PathBuf {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("themes/atlus")
-    }
-
-    fn hermes_fonts_dir() -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("themes/hermes")
     }
 
     #[test]
@@ -1247,82 +1538,294 @@ mod tests {
     }
 
     #[test]
-    fn hermes_cormorant_display_resolves() {
+    fn zero_negative_and_non_finite_font_sizes_are_safe() {
         let e = TextEngine::new();
-        e.load_fonts_from_dir(&hermes_fonts_dir());
-        let sans = e.measure("TYPE", 72.0, Weight::NORMAL, "");
-        let serif = e.measure("TYPE", 72.0, Weight::NORMAL, "Cormorant Display");
-        let light = e.measure("HIREN", 22.0, Weight::NORMAL, "Cormorant Display");
-        let bold = e.measure("HIREN", 22.0, Weight::BOLD, "Cormorant Display");
-        let courier = e.measure("MIT", 11.0, Weight::BOLD, "Courier Prime");
-        let courier_sans = e.measure("MIT", 11.0, Weight::BOLD, "");
+        // Regression: `font_size = "0"` used to panic inside cosmic-text
+        // (`line height cannot be 0`) and negative sizes wedged shaping.
+        let at_min = e.measure("x", MIN_FONT_SIZE, Weight::NORMAL, "");
+        assert!(at_min > 0.0);
+        assert_eq!(e.measure("x", 0.0, Weight::NORMAL, ""), at_min);
+        assert_eq!(e.measure("x", -8.0, Weight::NORMAL, ""), at_min);
+        assert_eq!(e.measure("x", f32::NAN, Weight::NORMAL, ""), 0.0);
+        assert_eq!(e.measure("x", f32::INFINITY, Weight::NORMAL, ""), 0.0);
+        let style = TextStyle::new("", None, None);
+        // Finite out-of-range sizes clamp and rasterize; non-finite values
+        // have no meaningful size and are rejected.
+        for bad in [0.0f32, -8.0] {
+            assert!(
+                e.render("x", 100.0, 20.0, bad, Weight::NORMAL, "left", (255, 255, 255, 255), &style)
+                    .is_some(),
+                "font_size {bad} must clamp, not panic"
+            );
+        }
+        for bad in [f32::NAN, f32::INFINITY] {
+            assert!(
+                e.render("x", 100.0, 20.0, bad, Weight::NORMAL, "left", (255, 255, 255, 255), &style)
+                    .is_none(),
+                "font_size {bad} must be rejected before shaping"
+            );
+        }
+    }
+
+    #[test]
+    fn out_of_range_font_sizes_are_clamped() {
+        let e = TextEngine::new();
+        e.load_fonts_from_dir(&atlus_fonts_dir());
+        let at_min = e.measure("HIREN", MIN_FONT_SIZE, Weight::NORMAL, "Anton");
+        let clamped_min = e.measure("HIREN", 0.01, Weight::NORMAL, "Anton");
+        assert!(at_min > 0.0);
+        assert!((clamped_min - at_min).abs() < 0.01, "0.01 must clamp to {MIN_FONT_SIZE}: {clamped_min} vs {at_min}");
+        let at_max = e.measure("HIREN", MAX_FONT_SIZE, Weight::NORMAL, "Anton");
+        let clamped_max = e.measure("HIREN", 1.0e9, Weight::NORMAL, "Anton");
+        assert!((clamped_max - at_max).abs() < 0.01, "1e9 must clamp to {MAX_FONT_SIZE}: {clamped_max} vs {at_max}");
+    }
+
+    #[test]
+    fn sanitize_font_size_bounds() {
+        assert_eq!(sanitize_font_size(16.0), Some(16.0));
+        assert_eq!(sanitize_font_size(MIN_FONT_SIZE), Some(MIN_FONT_SIZE));
+        assert_eq!(sanitize_font_size(MAX_FONT_SIZE), Some(MAX_FONT_SIZE));
+        assert_eq!(sanitize_font_size(0.0), Some(MIN_FONT_SIZE));
+        assert_eq!(sanitize_font_size(-3.0), Some(MIN_FONT_SIZE));
+        assert_eq!(sanitize_font_size(1.0e9), Some(MAX_FONT_SIZE));
+        assert_eq!(sanitize_font_size(f32::NAN), None);
+        assert_eq!(sanitize_font_size(f32::NEG_INFINITY), None);
+    }
+
+    fn alpha_histogram(pm: &Pixmap) -> (usize, usize, u8) {
+        let mut partial = 0usize;
+        let mut opaque = 0usize;
+        let mut max = 0u8;
+        for px in pm.data().chunks_exact(4) {
+            let a = px[3];
+            max = max.max(a);
+            if a > 0 && a < 255 {
+                partial += 1;
+            } else if a == 255 {
+                opaque += 1;
+            }
+        }
+        (partial, opaque, max)
+    }
+
+    fn ink_count(pm: &Pixmap) -> usize {
+        pm.data().chunks_exact(4).filter(|px| px[3] > 30).count()
+    }
+
+    fn ink_bbox(pm: &Pixmap) -> Option<(u32, u32, u32, u32)> {
+        let (w, h) = (pm.width(), pm.height());
+        let data = pm.data();
+        let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
+        for y in 0..h {
+            for x in 0..w {
+                if data[((y * w + x) * 4 + 3) as usize] > 30 {
+                    x0 = x0.min(x);
+                    y0 = y0.min(y);
+                    x1 = x1.max(x);
+                    y1 = y1.max(y);
+                }
+            }
+        }
+        (x1 >= x0 && y1 >= y0).then_some((x0, y0, x1, y1))
+    }
+
+    #[test]
+    fn text_keeps_antialiasing_and_colour_alpha() {
+        let e = TextEngine::new();
+        e.load_fonts_from_dir(&atlus_fonts_dir());
+        let mut style = TextStyle::new("Anton", None, None);
+        style.nowrap = true;
+        // Opaque ink still has partial-coverage edge pixels.
+        let (pm, _) = e
+            .render("H", 160.0, 160.0, 96.0, Weight::NORMAL, "left", (255, 255, 255, 255), &style)
+            .expect("render opaque");
+        let (partial, opaque, max) = alpha_histogram(&pm);
+        assert!(opaque > 100, "expected opaque ink, got {opaque} full pixels");
+        assert!(partial > 100, "anti-aliased edges lost: only {partial} partial pixels");
+        assert_eq!(max, 255);
+        // Colour alpha must be honoured: rgba(255,255,255,0.25) is translucent.
+        let (pm, _) = e
+            .render("H", 160.0, 160.0, 96.0, Weight::NORMAL, "left", (255, 255, 255, 64), &style)
+            .expect("render translucent");
+        let (partial, _, max) = alpha_histogram(&pm);
+        assert!(max <= 64, "text colour alpha ignored: max alpha {max} (was binary 0/255)");
+        assert!(partial > 100, "translucent glyph must still be anti-aliased");
+    }
+
+    #[test]
+    fn nowrap_large_display_ink_is_not_clipped() {
+        let e = TextEngine::new();
+        e.load_fonts_from_dir(&atlus_fonts_dir());
+        let mut style = TextStyle::new("Playfair Display Black", None, None);
+        style.nowrap = true;
+        let size = 148.0;
+        let color = (0, 0, 0, 255);
+        // Display serif with a descender in the authored em-square box: the
+        // ink overflows the 1-em line box above and below, so the old fixed
+        // 8 px margin clipped it (margin must now derive from real ink).
+        let (tall, _) = e
+            .render("Typing", 1000.0, size * 2.0, size, Weight::NORMAL, "left", color, &style)
+            .expect("tall box");
+        let (em, margin) = e
+            .render("Typing", 1000.0, size, size, Weight::NORMAL, "left", color, &style)
+            .expect("em box");
         assert!(
-            (serif - sans).abs() > 2.0,
-            "Cormorant Display must resolve: sans={sans} serif={serif}"
+            margin > 8.0,
+            "margin must grow with display size/ink, got fixed-pad-like {margin}"
         );
+        let (_, y0, _, y1) = ink_bbox(&em).expect("ink");
         assert!(
-            (bold - light).abs() > 0.3,
-            "Cormorant Display Bold must resolve: light={light} bold={bold}"
+            y0 > 0 && y1 + 1 < em.height(),
+            "nowrap ink clipped at the raster border: y {y0}..{y1} of {} (margin {margin})",
+            em.height()
         );
+        let (a, b) = (ink_count(&tall), ink_count(&em));
+        let tolerance = (a / 100).max(4) as i64;
         assert!(
-            (courier - courier_sans).abs() > 0.4,
-            "Courier Prime must resolve: courier={courier} sans={courier_sans}"
+            (a as i64 - b as i64).abs() <= tolerance,
+            "em-square nowrap box loses ink: tall={a} em={b} (margin {margin})"
         );
     }
 
     #[test]
-    fn hermes_hairlines_are_opaque_ink() {
+    fn cached_render_returns_identical_margin_and_pixels() {
         let e = TextEngine::new();
-        e.load_fonts_from_dir(&hermes_fonts_dir());
-        let mut style = TextStyle::new("Cormorant Display", None, None);
+        e.load_fonts_from_dir(&atlus_fonts_dir());
+        let mut style = TextStyle::new("Playfair Display Black", Some((3.0, (0, 0, 0, 255))), None);
         style.nowrap = true;
-        let (pm, _) = e
-            .render(
-                "T",
-                80.0,
-                90.0,
-                72.0,
-                Weight::NORMAL,
-                "left",
-                (245, 245, 245, 255),
-                &style,
-            )
-            .expect("render");
-        let (w, h) = (pm.width(), pm.height());
-        let data = pm.data();
-        let opaque = |i: usize| data[i + 3] == 255 && data[i] > 200;
-        let mut min_x = w;
-        let mut max_x = 0u32;
-        let mut min_y = h;
-        for y in 0..h {
-            for x in 0..w {
-                let i = ((y * w + x) * 4) as usize;
-                if opaque(i) {
-                    min_x = min_x.min(x);
-                    max_x = max_x.max(x);
-                    min_y = min_y.min(y);
-                }
-            }
-        }
-        assert!(max_x > min_x + 20, "T never painted: bbox x {min_x}..{max_x}");
-        let bar_w = max_x.saturating_sub(min_x) + 1;
-        let mut bar_cols = 0u32;
-        for x in min_x..=max_x {
-            let mut hit = false;
-            for y in min_y..min_y.saturating_add(8).min(h) {
-                let i = ((y * w + x) * 4) as usize;
-                if opaque(i) {
-                    hit = true;
-                    break;
-                }
-            }
-            if hit {
-                bar_cols += 1;
-            }
+        let draw = || {
+            e.render("Wg", 320.0, 90.0, 64.0, Weight::NORMAL, "left", (255, 255, 255, 255), &style)
+                .expect("render")
+        };
+        let (pm1, m1) = draw();
+        let first = pm1.data().to_vec();
+        let (pm2, m2) = draw();
+        // Cache hit must not return a quantized margin or different pixels.
+        assert_eq!(m1, m2, "hit/miss margin disagreement");
+        assert_eq!(m1, m1.round(), "returned margin must match integer padding");
+        assert_eq!(first, pm2.data(), "cache hit must reproduce the first raster");
+    }
+
+    #[test]
+    fn pixmap_cache_is_byte_bounded() {
+        let key = |i: u32| -> PixmapKey {
+            (format!("k{i}"), 0, 0, 0, 0, 0, [0; 4], String::new(), TextStyleKey::default())
+        };
+        let mut cache = PixmapCache::default();
+        for i in 0..200u32 {
+            let pm = Pixmap::new(256, 256).expect("pixmap");
+            cache.insert(key(i), Some((pm, 0.0)));
         }
         assert!(
-            bar_cols * 100 / bar_w >= 70,
-            "T crossbar evaporated: {bar_cols}/{bar_w} opaque cols in the top 8px"
+            cache.bytes <= PIXMAP_CACHE_MAX_BYTES,
+            "cache exceeds byte budget: {} > {PIXMAP_CACHE_MAX_BYTES}",
+            cache.bytes
         );
+        assert!(cache.map.len() < 200, "entries must be evicted once the budget is reached");
+        // A single huge display raster is rendered but never cached.
+        let mut big = PixmapCache::default();
+        let pm = Pixmap::new(2048, 2048).expect("pixmap");
+        big.insert(key(0), Some((pm, 0.0)));
+        assert!(big.map.is_empty(), "oversized raster must not be cached");
+        big.clear();
+        assert_eq!(big.bytes, 0);
+    }
+
+    #[test]
+    fn measure_cache_is_bounded() {
+        let mut cache = MeasureCache::default();
+        for i in 0..(MEASURE_CACHE_MAX_ENTRIES as u32 + 100) {
+            cache.insert((format!("t{i}"), 0, 400, String::new()), i as f32);
+        }
+        assert!(
+            cache.map.len() <= MEASURE_CACHE_MAX_ENTRIES,
+            "measure cache unbounded: {} entries",
+            cache.map.len()
+        );
+    }
+
+    #[test]
+    fn ransom_plans_are_memoized() {
+        let e = TextEngine::new();
+        e.load_fonts_from_dir(&atlus_fonts_dir());
+        let fonts = default_ransom_fonts();
+        let a = e.ransom_plan("CALCULATOR", 36.0, &fonts);
+        let b = e.ransom_plan("CALCULATOR", 36.0, &fonts);
+        assert!(Rc::ptr_eq(&a, &b), "ransom plan must be cached, not re-shaped per call");
+    }
+
+    #[test]
+    fn font_weight_snaps_to_available_face_of_requested_family() {
+        let e = TextEngine::new();
+        e.load_fonts_from_dir(&atlus_fonts_dir());
+        let _ = e.measure("x", 16.0, Weight::NORMAL, "Playfair Display Black");
+        let mut guard = e.inner.font_system.borrow_mut();
+        let fs = guard.as_mut().expect("font system");
+        // Playfair Display Black ships 900 only; a w400 request must snap to it.
+        let (family, weight) = resolve_face(fs, "Playfair Display Black", Weight::NORMAL);
+        assert_eq!(family.as_deref(), Some("Playfair Display Black"));
+        assert_eq!(weight.0, 900);
+        // Anton ships 400 only; a bold request must snap down, not swap.
+        let (family, weight) = resolve_face(fs, "Anton", Weight::BOLD);
+        assert_eq!(family.as_deref(), Some("Anton"));
+        assert_eq!(weight.0, 400);
+        // An empty family first resolves the system sans-serif generic, then
+        // snaps to a weight that concrete family really has.
+        let generic = fs.db().family_name(&Family::SansSerif).to_string();
+        if generic.is_empty() {
+            return;
+        }
+        let (family, weight) = resolve_face(fs, "", Weight::MEDIUM);
+        assert_eq!(family.as_deref(), Some(generic.as_str()));
+        let exact_face = fs.db().faces().any(|f| {
+            f.style == cosmic_text::fontdb::Style::Normal
+                && f.weight.0 == weight.0
+                && f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(&generic))
+        });
+        assert!(
+            exact_face,
+            "generic sans snapped to {generic} {:?} without an exact face",
+            weight
+        );
+    }
+
+    #[test]
+    fn requested_weight_does_not_swap_the_family() {
+        let e = TextEngine::new();
+        e.load_fonts_from_dir(&atlus_fonts_dir());
+        // Regression: Playfair Display Black at w400 silently shaped Noto Sans.
+        let normal = e.measure("HAMBURG EF", 28.0, Weight::NORMAL, "Playfair Display Black");
+        let black = e.measure("HAMBURG EF", 28.0, Weight::BLACK, "Playfair Display Black");
+        assert!(
+            (normal - black).abs() < 0.01,
+            "weight request swapped the family instead of snapping: {normal} vs {black}"
+        );
+        let noto = e.measure("HAMBURG EF", 28.0, Weight::NORMAL, "Noto Sans");
+        assert!(
+            (normal - noto).abs() > 1.0,
+            "Playfair text must not fall back to Noto Sans: playfair={normal} noto={noto}"
+        );
+        // Geometry derived from a weightless measurement (the old text_width)
+        // now matches the rendered weight because both snap identically.
+        let requested = e.measure("HAMBURG EF", 28.0, Weight::MEDIUM, "");
+        let mut guard = e.inner.font_system.borrow_mut();
+        let fs = guard.as_mut().expect("font system");
+        let (family, weight) = resolve_face(fs, "", Weight::MEDIUM);
+        drop(guard);
+        let family = family.unwrap_or_default();
+        let snapped = e.measure("HAMBURG EF", 28.0, Weight(weight.0), &family);
+        assert!(
+            (requested - snapped).abs() < 0.01,
+            "measure must honour the snapped face: {requested} vs {snapped}"
+        );
+    }
+
+    #[test]
+    fn weight_tokens() {
+        assert_eq!(TextEngine::weight_of_str("500"), Weight::MEDIUM);
+        assert_eq!(TextEngine::weight_of_str("semibold"), Weight::SEMIBOLD);
+        assert_eq!(TextEngine::weight_of_str("900"), Weight::BLACK);
+        assert_eq!(TextEngine::weight_of_str(""), Weight::NORMAL);
+        assert_eq!(TextEngine::weight_of_str("nonsense"), Weight::NORMAL);
     }
 }
