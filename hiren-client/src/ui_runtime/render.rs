@@ -5,7 +5,7 @@
 //! into its own pixmap first, then composited — so transformed text works.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tiny_skia::{
     Color as SkColor, GradientStop, LinearGradient, Paint, PathBuilder, Pixmap, PixmapPaint,
@@ -18,10 +18,18 @@ use super::text::{TextEngine, TextStyle};
 
 pub struct Renderer {
     pub text: TextEngine,
-    images: HashMap<PathBuf, Option<Pixmap>>,
+    /// Rasterized images keyed by `(path, raster width, raster height)`.
+    /// PNGs use `(0, 0)` (native size); SVGs are rasterized at the node's
+    /// physical pixel size and keyed by it, so a large SVG is not upscaled
+    /// from a fixed 128 px bitmap. Cleared on theme hot reload.
+    images: HashMap<(PathBuf, u32, u32), Option<Pixmap>>,
     /// Scratch surface for scissored nodes (repeater viewports).
     scratch: Option<Pixmap>,
 }
+
+/// Image cache entry cap: SVG entries are per-size, so a resizing node would
+/// otherwise grow the map. Dropping all is fine — rasters re-load lazily.
+const IMAGE_CACHE_MAX_ENTRIES: usize = 128;
 
 impl Default for Renderer {
     fn default() -> Self {
@@ -32,6 +40,15 @@ impl Default for Renderer {
 impl Renderer {
     pub fn new() -> Self {
         Self { text: TextEngine::new(), images: HashMap::new(), scratch: None }
+    }
+
+    /// Drop every cached raster (text pixmaps/measurements, loaded images and
+    /// the scissor scratch). Called by the runtime on theme hot reload: fonts
+    /// may have been added and image files may have been edited.
+    pub fn clear_caches(&mut self) {
+        self.text.clear_caches();
+        self.images.clear();
+        self.scratch = None;
     }
 
     /// Render at `width x height` physical pixels; nodes are authored in
@@ -61,11 +78,17 @@ impl Renderer {
                 }
                 // Scissor: draw into a scratch surface, then composite only
                 // the part of the node that falls inside the clip rect.
+                //
+                // The whole path below is in PHYSICAL pixels: nodes and clip
+                // rects are authored in logical units, but the scratch raster
+                // and draw_node_at's offset are physical. Mixing the two made
+                // scissored nodes vanish on HiDPI (circular theme items at
+                // scale 2) because the node was drawn past the scratch edge.
                 let pad = 80.0 * scale; // rotation/scale/shadow spill
-                let bx = ((node.x.min(node.x + node.width) - pad).floor() as i32).max(0);
-                let by = ((node.y.min(node.y + node.height) - pad).floor() as i32).max(0);
-                let br = ((node.x.max(node.x + node.width) + pad).ceil() as i32).min(width as i32);
-                let bb = ((node.y.max(node.y + node.height) + pad).ceil() as i32).min(height as i32);
+                let bx = (((node.x.min(node.x + node.width)) * scale - pad).floor() as i32).max(0);
+                let by = (((node.y.min(node.y + node.height)) * scale - pad).floor() as i32).max(0);
+                let br = (((node.x.max(node.x + node.width)) * scale + pad).ceil() as i32).min(width as i32);
+                let bb = (((node.y.max(node.y + node.height)) * scale + pad).ceil() as i32).min(height as i32);
                 if br <= bx || bb <= by {
                     continue;
                 }
@@ -278,18 +301,21 @@ impl Renderer {
                 let align = node.props.get("align").map(|s| s.as_str()).unwrap_or("left");
                 let weight = TextEngine::weight_of(&node.props);
                 let family = node.props.get("font_family").cloned().unwrap_or_default();
-                // Comic outline: "4px #0C0C0D"; hard sticker shadow: "4px 5px #0C0C0D".
+                // Comic outline: "4px #0C0C0D"; hard sticker shadow: "3px 3px #000000".
+                // Authoring units are logical px; the raster is physical, so
+                // scale widths/offsets here or effects halve on HiDPI.
                 let outline = node
                     .props
                     .get("outline")
                     .and_then(|s| parse_border(s))
-                    .map(|(w, r, g, b, a)| (w, (r, g, b, a)));
+                    .map(|(w, r, g, b, a)| (w * scale, (r, g, b, a)));
                 let hard_shadow = node
                     .props
                     .get("text_shadow")
-                    .and_then(|s| parse_shadow(s))
-                    .map(|(dx, dy, _, r, g, b, a)| (dx, dy, (r, g, b, a)));
+                    .and_then(|s| parse_text_shadow(s))
+                    .map(|(dx, dy, r, g, b, a)| (dx * scale, dy * scale, (r, g, b, a)));
                 let mut style = TextStyle::new(&family, outline, hard_shadow);
+                style.scale = scale;
                 style.ransom = TextEngine::ransom_of(&node.props);
                 style.ransom_fonts = TextEngine::ransom_fonts_of(&node.props);
                 style.nowrap = TextEngine::nowrap_of(&node.props);
@@ -349,20 +375,48 @@ impl Renderer {
         if path.as_os_str().is_empty() {
             return;
         }
-        if !self.images.contains_key(&path) {
-            let loaded = load_image_file(&path);
+        if !node.width.is_finite() || !node.height.is_finite() || node.width < 1.0 || node.height < 1.0 {
+            return;
+        }
+        // SVG: rasterize at the node's physical size (and key the cache by it)
+        // so large vector art stays sharp instead of being upscaled from 128.
+        let is_svg = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("svg"));
+        let (rw, rh) = if is_svg {
+            let w = (node.width * scale).ceil().clamp(8.0, 4096.0) as u32;
+            let h = (node.height * scale).ceil().clamp(8.0, 4096.0) as u32;
+            (w, h)
+        } else {
+            (0, 0)
+        };
+        let key = (path.clone(), rw, rh);
+        if !self.images.contains_key(&key) {
+            let loaded = if is_svg {
+                rasterize_svg(&path, rw, rh)
+            } else {
+                load_image_file(&path).or_else(|| rasterize_svg(&path, rw.max(128), rh.max(128)))
+            };
             if loaded.is_none() {
                 log::warn!("Image node `{}`: cannot load {}", node.id, path.display());
             }
-            self.images.insert(path.clone(), loaded);
+            if self.images.len() >= IMAGE_CACHE_MAX_ENTRIES {
+                self.images.clear();
+            }
+            self.images.insert(key.clone(), loaded);
         }
-        let Some(Some(img)) = self.images.get(&path) else { return };
+        let Some(Some(img)) = self.images.get(&key) else { return };
         let (iw, ih) = (img.width() as f32, img.height() as f32);
-        if iw < 1.0 || ih < 1.0 || node.width < 1.0 || node.height < 1.0 {
+        if iw < 1.0 || ih < 1.0 {
             return;
         }
-        let sx = node.width * scale / iw;
-        let sy = node.height * scale / ih;
+        // `t` already contains the buffer scale (node_transform_with_scale),
+        // so the source is stretched in LOGICAL node units. Scaling by
+        // node.width*scale here drew every image at scale^2 (~197 px instead
+        // of 100 px for a 50 px node at 2x).
+        let sx = node.width / iw;
+        let sy = node.height / ih;
         let paint = PixmapPaint {
             opacity,
             blend_mode: tiny_skia::BlendMode::SourceOver,
@@ -374,24 +428,22 @@ impl Renderer {
 }
 
 fn load_image_file(path: &PathBuf) -> Option<Pixmap> {
-    if let Ok(pm) = Pixmap::load_png(path) {
-        return Some(pm);
-    }
-    rasterize_svg(path, 128)
+    Pixmap::load_png(path).ok()
 }
 
-fn rasterize_svg(path: &PathBuf, size: u32) -> Option<Pixmap> {
+/// Rasterize an SVG into a `w x h` pixmap (fit, centred, aspect preserved).
+fn rasterize_svg(path: &Path, w: u32, h: u32) -> Option<Pixmap> {
     let data = std::fs::read(path).ok()?;
     let tree = resvg::usvg::Tree::from_data(&data, &resvg::usvg::Options::default()).ok()?;
-    let mut pixmap = Pixmap::new(size, size)?;
+    let mut pixmap = Pixmap::new(w.max(1), h.max(1))?;
     let sz = tree.size();
-    let (w, h) = (sz.width(), sz.height());
-    if w < 0.5 || h < 0.5 {
+    let (sw, sh) = (sz.width(), sz.height());
+    if sw < 0.5 || sh < 0.5 {
         return None;
     }
-    let s = size as f32 / w.max(h);
-    let tx = (size as f32 - w * s) * 0.5;
-    let ty = (size as f32 - h * s) * 0.5;
+    let s = (w as f32 / sw).min(h as f32 / sh);
+    let tx = (w as f32 - sw * s) * 0.5;
+    let ty = (h as f32 - sh * s) * 0.5;
     let transform = Transform::from_translate(tx, ty).pre_scale(s, s);
     resvg::render(&tree, transform, &mut pixmap.as_mut());
     Some(pixmap)
@@ -476,6 +528,34 @@ fn parse_shadow(s: &str) -> Option<(f32, f32, f32, u8, u8, u8, u8)> {
     Some((sx, sy, blur, r, g, b, a))
 }
 
+/// Parse a text hard-shadow written in authoring/logical units:
+/// `"3px 3px #000000"`, `"4px 5px rgba(12,12,13,0.5)"` or `"2 2 #fff"`.
+/// A numeric blur token is tolerated (`"4px 5px 2px #000"`) for symmetry with
+/// the node `shadow` format; text shadows are never blurred. The old code
+/// reused `parse_shadow` (which requires 4 whitespace tokens and bare numbers)
+/// so the documented `"3px 3px #000000"` silently never parsed.
+fn parse_text_shadow(s: &str) -> Option<(f32, f32, u8, u8, u8, u8)> {
+    let tokens: Vec<&str> = s.split_whitespace().collect();
+    if tokens.len() < 3 {
+        return None;
+    }
+    let dx = parse_px_token(tokens[0])?;
+    let dy = parse_px_token(tokens[1])?;
+    let mut color_tokens = &tokens[2..];
+    if color_tokens.len() >= 2 && parse_px_token(color_tokens[0]).is_some() {
+        color_tokens = &color_tokens[1..]; // optional blur, ignored
+    }
+    let (r, g, b, a) = parse_color_str(&color_tokens.join(" "))?;
+    Some((dx, dy, r, g, b, a))
+}
+
+/// Parse a number with an optional `px` suffix (`"4"`, `"4px"`, `"-2.5px"`).
+fn parse_px_token(token: &str) -> Option<f32> {
+    let token = token.trim();
+    let number = token.strip_suffix("px").unwrap_or(token).trim();
+    number.parse::<f32>().ok().filter(|v| v.is_finite())
+}
+
 fn parse_border(s: &str) -> Option<(f32, u8, u8, u8, u8)> {
     // "1px rgba(255,255,255,0.08)" → width + color; bare color → width 1
     let mut width = 1.0;
@@ -494,50 +574,114 @@ fn parse_border(s: &str) -> Option<(f32, u8, u8, u8, u8)> {
     Some((width, r, g, b, a))
 }
 
-/// Parse `linear-gradient(<angle>deg, color pos%, color pos%, ...)` with CSS
-/// angle semantics (0° = to top, 90° = to right, 180° = to bottom).
-fn parse_linear_gradient(s: &str, node: &ResolvedNode, opacity: f32) -> Option<tiny_skia::Shader<'static>> {
-    let inner = s.split('(').nth(1)?.split(')').next()?;
-    let parts: Vec<&str> = inner.split(',').map(|p| p.trim()).collect();
+/// Extract the arguments of a CSS function, respecting nested parentheses
+/// (`linear-gradient(180deg, rgba(0,0,0,0.4) 0%, #fff 100%)`).
+fn gradient_args(s: &str) -> Option<&str> {
+    let open = s.find('(')?;
+    let rest = &s[open + 1..];
+    let mut depth = 0usize;
+    for (i, ch) in rest.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                if depth == 0 {
+                    return Some(&rest[..i]);
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Split on commas that are not inside parentheses (colour fallbacks).
+fn split_top_level_commas(s: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                out.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&s[start..]);
+    out
+}
+
+/// Parse the angle and colour stops of a CSS `linear-gradient` (colour alpha
+/// multiplied by node opacity). Positions are allowed to be omitted; interior
+/// runs are interpolated between the surrounding explicit stops.
+fn parse_linear_gradient_stops(s: &str, opacity: f32) -> Option<(f32, Vec<(SkColor, f32)>)> {
+    let inner = gradient_args(s)?;
+    let parts = split_top_level_commas(inner);
     if parts.len() < 2 {
         return None;
     }
     let mut angle: f32 = 180.0;
-    let mut colors: Vec<(SkColor, f32)> = Vec::new();
-    let mut explicit_positions = true;
-    for (i, p) in parts.iter().enumerate() {
+    let mut raw: Vec<(SkColor, Option<f32>)> = Vec::new();
+    for p in parts {
         let p = p.trim();
+        if p.is_empty() {
+            continue;
+        }
         if let Some(deg) = p.strip_suffix("deg") {
             angle = deg.trim().parse::<f32>().unwrap_or(180.0);
             continue;
         }
-        // "color pos%" or "color"
+        // "color pos%" / "color" (colour itself may contain a comma: rgba()).
         let (col_str, pos) = match p.rsplit_once(char::is_whitespace) {
-            Some((c, pct)) if pct.ends_with('%') => {
-                (c.trim(), pct[..pct.len() - 1].trim().parse::<f32>().unwrap_or(0.0) / 100.0)
+            Some((c, pct)) if pct.trim().ends_with('%') => {
+                let pct = pct.trim();
+                (c.trim(), pct[..pct.len() - 1].trim().parse::<f32>().ok().map(|v| v / 100.0))
             }
-            _ => {
-                explicit_positions = false;
-                (p, i as f32 / (parts.len() - 1).max(1) as f32)
-            }
+            _ => (p, None),
         };
         if let Some((r, g, b, a)) = parse_color_str(col_str) {
-            colors.push((SkColor::from_rgba8(r, g, b, (a as f32 * opacity) as u8), pos));
+            raw.push((SkColor::from_rgba8(r, g, b, (a as f32 * opacity) as u8), pos));
         }
     }
-    if colors.len() < 2 {
+    if raw.len() < 2 {
         return None;
     }
-    if !explicit_positions {
-        // distribute evenly if author omitted percentages
-        let n = colors.len();
-        for (i, c) in colors.iter_mut().enumerate() {
-            c.1 = i as f32 / (n - 1).max(1) as f32;
-        }
+    // CSS stop distribution: explicit positions win; a run of stops without a
+    // position is spread evenly between the previous and next explicit stop.
+    let mut positions: Vec<f32> = Vec::with_capacity(raw.len());
+    let mut cursor = 0.0f32;
+    for (i, (_, pos)) in raw.iter().enumerate() {
+        cursor = match pos {
+            Some(p) => (*p).clamp(cursor, 1.0),
+            None => {
+                let next = raw[i..]
+                    .iter()
+                    .find_map(|(_, p)| *p)
+                    .unwrap_or(1.0)
+                    .clamp(cursor, 1.0);
+                let missing = raw[i..].iter().take_while(|(_, p)| p.is_none()).count();
+                cursor + (next - cursor) / (missing as f32 + 1.0)
+            }
+        };
+        positions.push(cursor);
     }
-    colors.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    let stops = raw
+        .into_iter()
+        .zip(positions)
+        .map(|((colour, _), pos)| (colour, pos.clamp(0.0, 1.0)))
+        .collect();
+    Some((angle, stops))
+}
 
-    let stops: Vec<GradientStop> = colors.into_iter().map(|(c, p)| GradientStop::new(p.clamp(0.0, 1.0), c)).collect();
+/// Parse `linear-gradient(<angle>deg, color pos%, color pos%, ...)` with CSS
+/// angle semantics (0° = to top, 90° = to right, 180° = to bottom).
+fn parse_linear_gradient(s: &str, node: &ResolvedNode, opacity: f32) -> Option<tiny_skia::Shader<'static>> {
+    let (angle, colors) = parse_linear_gradient_stops(s, opacity)?;
+    let stops: Vec<GradientStop> = colors.into_iter().map(|(c, p)| GradientStop::new(p, c)).collect();
 
     // CSS gradient line through the node center.
     let rad = angle.to_radians();
@@ -557,4 +701,176 @@ pub fn solid_color(s: &str) -> Option<Color> {
         return None;
     }
     parse_color_str(t)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn node(id: &str, kind: &str, x: f32, y: f32, w: f32, h: f32) -> ResolvedNode {
+        ResolvedNode {
+            id: id.into(),
+            kind: kind.into(),
+            x,
+            y,
+            width: w,
+            height: h,
+            opacity: 1.0,
+            z: 0,
+            visible: true,
+            props: HashMap::new(),
+            text: None,
+            color: None,
+            background: None,
+            radius: 0.0,
+            rotation: 0.0,
+            skew: 0.0,
+            scale: 1.0,
+            points: vec![],
+            animate: vec![],
+            clip: None,
+            action: None,
+            index: None,
+        }
+    }
+
+    fn bbox_of(pm: &Pixmap, pred: impl Fn(&[u8]) -> bool) -> Option<(u32, u32, u32, u32)> {
+        let (w, h) = (pm.width(), pm.height());
+        let data = pm.data();
+        let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0u32, 0u32);
+        let mut any = false;
+        for y in 0..h {
+            for x in 0..w {
+                let px = &data[((y * w + x) * 4) as usize..][..4];
+                if pred(px) {
+                    any = true;
+                    x0 = x0.min(x);
+                    y0 = y0.min(y);
+                    x1 = x1.max(x);
+                    y1 = y1.max(y);
+                }
+            }
+        }
+        any.then_some((x0, y0, x1, y1))
+    }
+
+    fn rgba8_string(c: SkColor) -> (u8, u8, u8, u8) {
+        (
+            (c.red() * 255.0).round() as u8,
+            (c.green() * 255.0).round() as u8,
+            (c.blue() * 255.0).round() as u8,
+            (c.alpha() * 255.0).round() as u8,
+        )
+    }
+
+    #[test]
+    fn documented_text_shadow_format_parses() {
+        assert_eq!(parse_text_shadow("3px 3px #000000"), Some((3.0, 3.0, 0, 0, 0, 255)));
+        assert_eq!(
+            parse_text_shadow("4px 5px rgba(12,12,13,0.5)"),
+            Some((4.0, 5.0, 12, 12, 13, 128))
+        );
+        assert_eq!(parse_text_shadow("2 2 #fff"), Some((2.0, 2.0, 255, 255, 255, 255)));
+        // optional blur token (node `shadow` symmetry) is tolerated
+        assert_eq!(parse_text_shadow("4px 5px 2px #0C0C0D"), Some((4.0, 5.0, 12, 12, 13, 255)));
+        assert_eq!(parse_text_shadow("3px #000"), None);
+        assert_eq!(parse_text_shadow("nonsense"), None);
+    }
+
+    #[test]
+    fn gradient_with_rgba_stops_parses() {
+        let (angle, stops) = parse_linear_gradient_stops(
+            "linear-gradient(180deg, rgba(30,30,46,0.9) 0%, #1e1e2e 100%)",
+            1.0,
+        )
+        .expect("gradient with rgba() stops must parse");
+        assert_eq!(angle, 180.0);
+        assert_eq!(stops.len(), 2);
+        assert_eq!(rgba8_string(stops[0].0), (30, 30, 46, 230));
+        assert_eq!(rgba8_string(stops[1].0), (30, 30, 46, 255));
+        assert_eq!(stops[0].1, 0.0);
+        assert_eq!(stops[1].1, 1.0);
+    }
+
+    #[test]
+    fn gradient_positions_distribute_between_explicit_stops() {
+        let (_, stops) = parse_linear_gradient_stops(
+            "linear-gradient(90deg, #000 0%, #555, #aaa, #fff 100%)",
+            1.0,
+        )
+        .expect("gradient");
+        let pos: Vec<f32> = stops.iter().map(|(_, p)| *p).collect();
+        assert_eq!(pos.len(), 4);
+        assert!((pos[1] - 1.0 / 3.0).abs() < 0.01, "{pos:?}");
+        assert!((pos[2] - 2.0 / 3.0).abs() < 0.01, "{pos:?}");
+    }
+
+    #[test]
+    fn gradient_with_rgba_stops_renders_pixels() {
+        let mut r = Renderer::new();
+        let mut n = node("bg", "Rectangle", 0.0, 0.0, 100.0, 100.0);
+        n.props.insert(
+            "background".into(),
+            "linear-gradient(180deg, rgba(30,30,46,0.9) 0%, #1e1e2e 100%)".into(),
+        );
+        let pm = r.render(&[n], 100, 100, 1.0);
+        let painted = pm.data().chunks_exact(4).filter(|px| px[3] > 0).count();
+        assert!(painted > 9000, "rgba()-stop gradient painted only {painted} px");
+    }
+
+    #[test]
+    fn scissored_node_renders_at_scale_1_and_2() {
+        let make = || {
+            let mut n = node("row", "Rectangle", 100.0, 300.0, 100.0, 40.0);
+            n.clip = Some((0.0, 0.0, 640.0, 320.0));
+            n.props.insert("background".into(), "#ff0000".into());
+            n
+        };
+        // 1x: node is cut at the clip's bottom edge (physical == logical).
+        let mut r = Renderer::new();
+        let pm = r.render(&[make()], 640, 320, 1.0);
+        let (x0, y0, x1, y1) = bbox_of(&pm, |p| p[3] > 0).expect("paints at 1x");
+        assert_eq!((x0, y0), (100, 300), "1x origin");
+        assert_eq!((x1, y1), (199, 319), "1x clip");
+        // 2x: node physical rect = (200,600)-(400,680), clipped at y=640.
+        // The old logical/physical mix drew it outside the scratch (nothing).
+        let mut r2 = Renderer::new();
+        let pm2 = r2.render(&[make()], 1280, 640, 2.0);
+        let (x0, y0, x1, y1) = bbox_of(&pm2, |p| p[3] > 0).expect("scissored node must paint at 2x");
+        assert!((198..=202).contains(&x0), "2x x0={x0}");
+        assert!((398..=402).contains(&x1), "2x x1={x1}");
+        assert!((598..=602).contains(&y0), "2x y0={y0}");
+        assert!((y1 as i32 - 639).abs() <= 1, "2x must clip at y=640, y1={y1}");
+    }
+
+    #[test]
+    fn hidpi_image_drawn_at_logical_size_not_scale_squared() {
+        let path = PathBuf::from("/hiren-test/icon.png");
+        let mut src = Pixmap::new(10, 10).expect("src pixmap");
+        src.fill(SkColor::from_rgba8(255, 0, 0, 255));
+        let mut r = Renderer::new();
+        r.images.insert((path.clone(), 0, 0), Some(src));
+        let mut n = node("img", "Image", 10.0, 10.0, 50.0, 50.0);
+        n.props.insert("src".into(), path.to_string_lossy().into_owned());
+        let pm = r.render(&[n], 200, 200, 2.0);
+        let (x0, y0, x1, y1) = bbox_of(&pm, |p| p[3] > 0).expect("image paints");
+        let (w, h) = (x1 - x0 + 1, y1 - y0 + 1);
+        assert!(
+            (95..=102).contains(&w) && (95..=102).contains(&h),
+            "50 px logical image must be ~100 px physical at 2x, got {w}x{h}"
+        );
+        assert!((18..=22).contains(&x0) && (18..=22).contains(&y0), "origin at {x0},{y0}");
+    }
+
+    #[test]
+    fn clear_caches_drops_images_and_text_rasters() {
+        let path = PathBuf::from("/hiren-test/icon.png");
+        let mut r = Renderer::new();
+        r.images.insert((path.clone(), 0, 0), Some(Pixmap::new(4, 4).expect("pm")));
+        r.scratch = Some(Pixmap::new(8, 8).expect("pm"));
+        r.clear_caches();
+        assert!(r.images.is_empty());
+        assert!(r.scratch.is_none());
+    }
 }
