@@ -310,6 +310,7 @@ fn bake_anims(anims: &[AnimateDef], ctx: &mut EvalContext) -> Vec<AnimateDef> {
 // Repeaters
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn resolve_repeater(
     def: &NodeDef,
     theme: &Theme,
@@ -1625,6 +1626,10 @@ mod atlus_theme_tests {
         let row = rest.nodes.iter().find(|n| n.id == "results-0/row_name").expect("row");
         assert!(row.opacity > 0.5, "results must remain readable, o={}", row.opacity);
         assert!(row.x > 80.0, "selected name sits on the cascade, x={}", row.x);
+        // layout target = repeater x 56 + delegate x (76 + selected 28) = 160.
+        // The component entrance (`from = -110`, stagger) must settle there:
+        // before the animate-merge/target-snapshot fix rows never got past ~56.
+        assert!((row.x - 160.0).abs() < 8.0, "selected row reaches its layout target, x={}", row.x);
         let plate = rest.nodes.iter().find(|n| n.id == "archive_plate").expect("plate");
         assert!(plate.x < 900.0, "dossier plate must settle on-screen, x={}", plate.x);
         let plate_right = plate.x + plate.points.iter().map(|(x, _)| *x).fold(0.0f32, f32::max);

@@ -358,4 +358,40 @@ mod tests {
         let s2 = c.nodes.iter().find(|n| n.id == "card").unwrap().scale;
         assert!(s2 > 1.2, "select trigger replays from=1.4, got {s2}");
     }
+
+    #[test]
+    fn duplicate_animate_entries_reach_the_layout_target() {
+        // Two entries for one property share an animation key. Before targets
+        // were snapshotted from the layout values, the second entry read the
+        // coordinate after the first had already animated it and retargeted
+        // toward that intermediate value — the pair crawled and never settled.
+        let raw = r#"
+            [meta]
+            name = "t"
+            [[nodes]]
+            id = "card"
+            type = "Rectangle"
+            x = "launcher.selected_index * 50 + 20"
+            y = "10"
+            width = "40"
+            height = "40"
+            animate = [
+              { property = "x", duration_ms = 120, easing = "linear" },
+              { property = "x", duration_ms = 120, delay_ms = 40, easing = "linear" },
+            ]
+        "#;
+        let theme: Theme = toml::from_str(raw).expect("theme");
+        let state = ObservableState::new(LauncherState::new());
+        let mut rt = UiRuntime::new(theme, state.clone());
+        let first = rt.resolve((400, 200));
+        assert_eq!(first.nodes.iter().find(|n| n.id == "card").unwrap().x, 20.0);
+
+        state.update(|s| s.selected_index = 4);
+        let _ = rt.resolve((400, 200));
+        std::thread::sleep(Duration::from_millis(450));
+        let settled = rt.resolve((400, 200));
+        let x = settled.nodes.iter().find(|n| n.id == "card").unwrap().x;
+        assert!((x - 220.0).abs() < 1.0, "duplicate entries must settle at the layout target, got {x}");
+        assert!(!rt.animating(), "animation must finish");
+    }
 }
