@@ -104,8 +104,33 @@ pub fn shake(amp: f64, seed: f64, hit: f64, since: f64) -> f64 {
 }
 
 /// Text measurement hook (implemented by the text engine; optional).
-/// Arguments: (text, font_size, family) — empty family = default sans-serif.
-pub type Measurer<'a> = &'a dyn Fn(&str, f32, &str) -> f32;
+/// Arguments: (text, font_size, family, weight) — empty family = default
+/// sans-serif, weight is a canonical 100..=900 value (400 = normal).
+pub type Measurer<'a> = &'a dyn Fn(&str, f32, &str, u16) -> f32;
+
+/// Canonical font weight from a theme token (the `font_weight` vocabulary):
+/// `"100".."900"`, `thin`, `extralight`, `light`, `normal`/`regular`, `medium`,
+/// `semibold`, `bold`, `extrabold`, `black`. Unknown/empty → 400 (normal).
+pub fn weight_value(token: &str) -> u16 {
+    let t = token.trim().trim_matches(|c| c == '\'' || c == '"').trim();
+    if let Ok(v) = t.parse::<u16>() {
+        if (100..=900).contains(&v) {
+            return v;
+        }
+    }
+    match t.to_ascii_lowercase().as_str() {
+        "thin" => 100,
+        "extralight" => 200,
+        "light" => 300,
+        "normal" | "regular" => 400,
+        "medium" => 500,
+        "semibold" => 600,
+        "bold" => 700,
+        "extrabold" => 800,
+        "black" => 900,
+        _ => 400,
+    }
+}
 
 /// Context available during binding evaluation.
 #[derive(Clone)]
@@ -222,15 +247,16 @@ fn eval_inner(expr: &str, ctx: &mut EvalContext) -> String {
         return v.to_string();
     }
 
-    // text_width(expr, size[, family])
+    // text_width(expr, size[, family[, weight]])
     if expr.starts_with("text_width(") && expr.ends_with(')') {
         if let Some(args) = split_top_args(&expr["text_width(".len()..expr.len() - 1]) {
             if args.len() >= 2 {
                 let text = eval_inner(args[0].trim(), ctx);
                 let size = eval_f32(args[1].trim(), ctx, 15.0);
                 let family = if args.len() >= 3 { eval_inner(args[2].trim(), ctx) } else { String::new() };
+                let weight = if args.len() >= 4 { eval_inner(args[3].trim(), ctx) } else { String::new() };
                 if let Some(m) = ctx.measure {
-                    let w = m(&text, size, &family);
+                    let w = m(&text, size, &family, weight_value(&weight));
                     return format!("{}", w.round());
                 }
                 return "0".into();
@@ -253,7 +279,8 @@ fn eval_inner(expr: &str, ctx: &mut EvalContext) -> String {
     if expr.starts_with("initial(") && expr.ends_with(')') {
         if let Some(args) = split_top_args(&expr["initial(".len()..expr.len() - 1]) {
             let text = eval_inner(args[0].trim(), ctx);
-            return text.chars().next().map(|c| c.to_string()).unwrap_or_default();
+            use unicode_segmentation::UnicodeSegmentation;
+            return text.graphemes(true).next().unwrap_or_default().to_string();
         }
     }
 
@@ -271,7 +298,25 @@ fn eval_inner(expr: &str, ctx: &mut EvalContext) -> String {
                 format!("{}", (v * 1e4).round() / 1e4)
             }
         }
-        None => expr.to_string(), // passthrough: plain text, color literal, etc.
+        None => {
+            warn_unresolved_path(expr, ctx);
+            expr.to_string() // passthrough: plain text, color literal, etc.
+        }
+    }
+}
+
+/// Diagnostics for the classic theme typo: an unknown plain state path
+/// (`width = "window.widht"`, `text = "launcher.quer"`) currently passes through
+/// as a literal, so the node silently falls back to a default width or shows
+/// the expression itself as its label. Warn instead of failing silently.
+fn warn_unresolved_path(expr: &str, ctx: &mut EvalContext) {
+    let path = expr.trim();
+    let state_path = path.starts_with("launcher.") || path.starts_with("window.");
+    let plain = !path.is_empty()
+        && path.contains('.')
+        && path.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_');
+    if state_path && plain {
+        ctx.record_diag("binding", &format!("unresolved state path `{path}` (treated as a literal)"));
     }
 }
 
@@ -292,7 +337,14 @@ fn eval_logic(expr: &str, ctx: &mut EvalContext) -> Option<bool> {
         if let Some((a, b)) = split_top(expr, op) {
             let av = eval_inner(a.trim(), ctx);
             let bv = eval_inner(b.trim(), ctx);
-            let (an, bn) = (av.trim().parse::<f64>().ok(), bv.trim().parse::<f64>().ok());
+            // A quoted operand is a *string*: `"00" == "0"` must not compare
+            // numerically (theme ids like `item_id == '00'` would false-positive).
+            let string_operands = strip_quotes(a.trim()).is_some() || strip_quotes(b.trim()).is_some();
+            let (an, bn) = if string_operands {
+                (None, None)
+            } else {
+                (av.trim().parse::<f64>().ok(), bv.trim().parse::<f64>().ok())
+            };
             let res = match (an, bn) {
                 (Some(x), Some(y)) => match op {
                     "==" => (x - y).abs() < 1e-9,
@@ -341,6 +393,8 @@ fn property_value(expr: &str, ctx: &EvalContext) -> Option<String> {
         "window.width" => return Some(ctx.window_size.0.to_string()),
         "window.height" => return Some(ctx.window_size.1.to_string()),
         "time" => return Some(format!("{}", ctx.time)),
+        "pi" => return Some(format!("{}", std::f64::consts::PI)),
+        "tau" => return Some(format!("{}", std::f64::consts::TAU)),
         "hit" => return Some(format!("{}", ctx.impulse.hit)),
         "hit_type" => return Some(format!("{}", ctx.impulse.hit_type)),
         "since_select" => return Some(format!("{}", ctx.impulse.since_select)),
@@ -389,28 +443,35 @@ fn property_value(expr: &str, ctx: &EvalContext) -> Option<String> {
 /// with their values so the expression can be handed to meval. Scans identifier
 /// tokens (letters, digits, `_`, and `.` followed by a letter) so literals like
 /// `1.5` are left intact.
+///
+/// The scan is byte-based (`expr.as_bytes()` + UTF-8 char lengths), never a
+/// char index used as a byte offset: non-ASCII text in bindings (Cyrillic UI
+/// strings, `'ü'`, …) must not panic.
 fn substitute_paths(expr: &str, ctx: &mut EvalContext) -> String {
     let mut out = String::with_capacity(expr.len());
-    let b: Vec<char> = expr.chars().collect();
+    let bytes = expr.as_bytes();
     let mut i = 0;
-    while i < b.len() {
-        let c = b[i];
-        if c == '\'' || c == '"' {
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c == b'\'' || c == b'"' {
             // copy quoted region verbatim
             let q = c;
-            out.push(c);
+            out.push(q as char);
             i += 1;
-            while i < b.len() {
-                out.push(b[i]);
-                if b[i] == q {
-                    i += 1;
+            while i < bytes.len() {
+                let len = utf8_char_len(bytes, i);
+                out.push_str(&expr[i..i + len]);
+                let closes = bytes[i] == q;
+                i += len;
+                if closes {
                     break;
                 }
-                i += 1;
             }
             continue;
         }
-        if expr[i..].starts_with("text_width(") && (i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == '_')) {
+        if bytes[i..].starts_with(b"text_width(")
+            && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_'))
+        {
             // measured text width → numeric literal usable in arithmetic
             if let Some((args, end)) = scan_paren_args(&expr[i + "text_width".len()..]) {
                 let arg_list = split_top_args(args);
@@ -420,8 +481,9 @@ fn substitute_paths(expr: &str, ctx: &mut EvalContext) -> String {
                         let text = eval_inner(list[0].trim(), ctx);
                         let size = eval_f32(list[1].trim(), ctx, 15.0);
                         let family = if list.len() >= 3 { eval_inner(list[2].trim(), ctx) } else { String::new() };
+                        let weight = if list.len() >= 4 { eval_inner(list[3].trim(), ctx) } else { String::new() };
                         if let Some(m) = ctx.measure {
-                            value = m(&text, size, &family) as f64;
+                            value = m(&text, size, &family, weight_value(&weight)) as f64;
                         }
                     }
                 }
@@ -431,30 +493,54 @@ fn substitute_paths(expr: &str, ctx: &mut EvalContext) -> String {
                 continue;
             }
         }
-        if c.is_ascii_alphabetic() || c == '_' {
+        if c.is_ascii_alphabetic() || c == b'_' {
             // identifier token, may contain dots followed by letters (dotted path)
             let start = i;
             i += 1;
-            while i < b.len() {
-                if b[i].is_ascii_alphanumeric() || b[i] == '_' {
+            while i < bytes.len() {
+                if bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' {
                     i += 1;
-                } else if b[i] == '.' && i + 1 < b.len() && (b[i + 1].is_ascii_alphabetic() || b[i + 1] == '_') {
+                } else if bytes[i] == b'.'
+                    && i + 1 < bytes.len()
+                    && (bytes[i + 1].is_ascii_alphabetic() || bytes[i + 1] == b'_')
+                {
                     i += 1;
                 } else {
                     break;
                 }
             }
-            let token: String = b[start..i].iter().collect();
-            match path_number(&token, ctx) {
+            let token = &expr[start..i];
+            match path_number(token, ctx) {
+                Some(_) if is_meval_var(token, ctx) => out.push_str(token),
                 Some(v) => out.push_str(&format!("{v}")),
-                None => out.push_str(&token),
+                None => out.push_str(token),
             }
         } else {
-            out.push(c);
-            i += 1;
+            let len = utf8_char_len(bytes, i);
+            out.push_str(&expr[i..i + len]);
+            i += len;
         }
     }
     out
+}
+
+/// Length in bytes of the UTF-8 code point starting at `i` (`i` must be a char
+/// boundary; `expr` is a valid `&str`, so the leading-byte table is enough).
+fn utf8_char_len(bytes: &[u8], i: usize) -> usize {
+    match bytes.get(i).copied().unwrap_or(0) {
+        0x00..=0x7f => 1,
+        0xc0..=0xdf => 2,
+        0xe0..=0xef => 3,
+        _ => 4,
+    }
+}
+
+/// Tokens that `eval_numeric` hands to meval as context variables instead of
+/// inlining. Leaving them unsubstituted keeps the meval cache key stable across
+/// frames (a `time`/`hit` binding used to miss the parse cache every frame).
+fn is_meval_var(token: &str, ctx: &EvalContext) -> bool {
+    matches!(token, "pi" | "tau" | "time" | "hit" | "hit_type" | "since_select" | "since_type")
+        || (!token.contains('.') && ctx.locals.contains_key(token))
 }
 
 /// Given a string starting at `(`, return the balanced paren contents and the
@@ -607,13 +693,24 @@ fn eval_numeric(expr: &str, ctx: &mut EvalContext) -> Option<f64> {
 // Top-level token scanning helpers
 // ---------------------------------------------------------------------------
 
+/// Strip a *single* quoted literal: the closing quote must be the last byte of
+/// `s`. `'a'=='a'` is a comparison, not a string — a naive first/last-byte check
+/// used to swallow it and evaluate the ternary condition as garbage.
 fn strip_quotes(s: &str) -> Option<&str> {
     let b = s.as_bytes();
-    if b.len() >= 2 && (b[0] == b'\'' || b[0] == b'"') && b[b.len() - 1] == b[0] {
-        Some(&s[1..s.len() - 1])
-    } else {
-        None
+    if b.len() < 2 || (b[0] != b'\'' && b[0] != b'"') {
+        return None;
     }
+    let q = b[0];
+    let mut i = 1;
+    while i < b.len() {
+        let len = utf8_char_len(b, i);
+        if b[i] == q {
+            return if i + len == b.len() { Some(&s[1..i]) } else { None };
+        }
+        i += len;
+    }
+    None
 }
 
 fn unquote(s: &str) -> &str {
@@ -878,7 +975,7 @@ mod tests {
         let mut s = LauncherState::new();
         s.query = "f".into();
         let mut c = EvalContext::new(&s, (1100, 680), 0.0);
-        let meas = |_: &str, _: f32, _: &str| 40.0;
+        let meas = |_: &str, _: f32, _: &str, _: u16| 40.0;
         c.measure = Some(&meas);
         assert_eq!(
             eval_f32(
@@ -896,5 +993,126 @@ mod tests {
             ),
             108.0
         );
+    }
+
+    #[test]
+    fn non_ascii_bindings_are_byte_safe() {
+        // Regression: the expression scanner indexed by char position but
+        // sliced by byte offset, so the second non-ASCII literal panicked
+        // (`'ü' + 'ü' + 1` → "byte index 9 is not a char boundary").
+        let s = LauncherState::new();
+        let mut c = ctx(&s);
+        assert_eq!(eval_str("'ü' + 'ü' + 1", &mut c), "'ü' + 'ü' + 1");
+        assert_eq!(eval_str("'Привет' + 'мир' + 1", &mut c), "'Привет' + 'мир' + 1");
+        assert_eq!(eval_str("'Привет, мир'", &mut c), "Привет, мир");
+        assert_eq!(eval_str("Проверка", &mut c), "Проверка");
+        // A non-ASCII literal before a measured call must not crash either.
+        let meas = |_: &str, _: f32, _: &str, _: u16| 40.0;
+        c.measure = Some(&meas);
+        assert_eq!(eval_str("text_width('Привет', 16)", &mut c), "40");
+        assert_eq!(eval_str("'ü' + text_width('ü', 16)", &mut c), "'ü' + text_width('ü', 16)");
+    }
+
+    #[test]
+    fn quoted_comparisons_are_not_string_literals() {
+        // Regression: `strip_quotes` only checked the first/last byte, so the
+        // condition `'a'=='a'` looked like one quoted literal and the ternary
+        // took the else branch.
+        let s = LauncherState::new();
+        let mut c = ctx(&s);
+        assert_eq!(eval_str("'a'=='a'?5:6", &mut c), "5");
+        assert_eq!(eval_str("'a'=='b'?5:6", &mut c), "6");
+        assert_eq!(eval_str("'hello world'", &mut c), "hello world");
+    }
+
+    #[test]
+    fn quoted_operands_compare_as_strings() {
+        // Regression: numeric coercion made "00" == "0" true.
+        let mut s = LauncherState::new();
+        s.query = "00".into();
+        let mut c = ctx(&s);
+        c.locals.insert("item_id".into(), "00".into());
+        assert_eq!(eval_bool("item_id == '00'", &mut c, false), true);
+        assert_eq!(eval_bool("item_id == '0'", &mut c, false), false);
+        assert_eq!(eval_bool("item_id != '0'", &mut c, false), true);
+        // Unquoted numeric comparisons stay numeric.
+        c.locals.insert("count".into(), "2".into());
+        assert_eq!(eval_bool("count == 2", &mut c, false), true);
+        assert_eq!(eval_bool("launcher.results_count == 0", &mut c, false), true);
+    }
+
+    #[test]
+    fn unresolved_state_paths_warn() {
+        let s = LauncherState::new();
+        let diag = Rc::new(RefCell::new(Diag::default()));
+        let mut c = ctx(&s);
+        c.diag = Some(diag.clone());
+        c.node = "probe".into();
+        assert_eq!(eval_str("launcher.quer", &mut c), "launcher.quer");
+        assert_eq!(eval_f32("window.widht", &mut c, 100.0), 100.0);
+        let warnings = diag.borrow().warnings.clone();
+        assert!(
+            warnings.iter().any(|w| w.contains("unresolved state path `launcher.quer`")),
+            "missing launcher.quer warning: {warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("unresolved state path `window.widht`")),
+            "missing window.widht warning: {warnings:?}"
+        );
+        // Known paths and plain literals stay silent.
+        let diag2 = Rc::new(RefCell::new(Diag::default()));
+        c.diag = Some(diag2.clone());
+        assert_eq!(eval_str("launcher.query", &mut c), "");
+        assert_eq!(eval_str("INQUIRE", &mut c), "INQUIRE");
+        assert!(diag2.borrow().warnings.is_empty(), "{:?}", diag2.borrow().warnings);
+    }
+
+    #[test]
+    fn pi_and_tau_are_bare_literals() {
+        let s = LauncherState::new();
+        let mut c = ctx(&s);
+        assert!((eval_f32("pi", &mut c, -1.0) - std::f32::consts::PI).abs() < 1e-5);
+        assert!((eval_f32("tau", &mut c, -1.0) - std::f32::consts::TAU).abs() < 1e-5);
+        assert_eq!(eval_f32("round(pi * 100)", &mut c, -1.0), 314.0);
+    }
+
+    #[test]
+    fn initial_uses_grapheme_clusters() {
+        let mut s = LauncherState::new();
+        s.query = "e\u{0301}clair".into(); // é as e + combining acute
+        let mut c = ctx(&s);
+        assert_eq!(eval_str("initial(launcher.query)", &mut c), "e\u{0301}");
+        s.query = "👍🏽 thumbs".into();
+        c = ctx(&s);
+        c.locals.insert("item_name".into(), "👨‍👩‍👧 family".into());
+        assert_eq!(eval_str("initial(item_name)", &mut c), "👨‍👩‍👧");
+    }
+
+    #[test]
+    fn text_width_optional_weight_reaches_the_measurer() {
+        let s = LauncherState::new();
+        let mut c = ctx(&s);
+        let meas = |_: &str, _: f32, family: &str, weight: u16| weight as f32 + family.len() as f32;
+        c.measure = Some(&meas);
+        assert_eq!(eval_str("text_width('x', 16)", &mut c), "400");
+        assert_eq!(eval_str("text_width('x', 16, '')", &mut c), "400");
+        assert_eq!(eval_str("text_width('x', 16, '', 700)", &mut c), "700");
+        assert_eq!(eval_str("text_width('x', 16, '', 'bold')", &mut c), "700");
+        assert_eq!(eval_str("text_width('x', 16, '', 'nonsense')", &mut c), "400");
+        assert_eq!(eval_str("text_width('x', 16, 'ab', 500)", &mut c), "502");
+    }
+
+    #[test]
+    fn substituted_expression_is_stable_across_frames() {
+        // The meval cache keys on the substituted string; state paths that are
+        // supplied as context variables (time/hit/…) must not be inlined, or
+        // every frame is a cache miss.
+        let s = LauncherState::new();
+        let mut a = EvalContext::new(&s, (640, 480), 0.25);
+        let mut b = EvalContext::new(&s, (640, 480), 9.75);
+        let ea = substitute_paths("sin(time * 2) * 10 + hit * 4", &mut a);
+        let eb = substitute_paths("sin(time * 2) * 10 + hit * 4", &mut b);
+        assert_eq!(ea, eb, "time/hit must stay symbolic for the parse cache");
+        assert_eq!(eval_f32("sin(time * 2) * 10 + hit * 4", &mut b, -1.0), 6.0554);
     }
 }

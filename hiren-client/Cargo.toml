@@ -22,6 +22,8 @@ meval = "0.2"
 log = "0.4"
 env_logger = "0.11"
 raw-window-handle = "0.6"
+# Grapheme clusters for `initial(text)` (already in Cargo.lock via cosmic-text).
+unicode-segmentation = "1"
 
 # Wayland layer-shell (optional, graceful fallback to normal window)
 wayland-client = { version = "0.31", optional = true }

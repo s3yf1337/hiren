@@ -874,6 +874,7 @@ dependencies = [
  "tempfile",
  "tiny-skia",
  "toml",
+ "unicode-segmentation",
  "wayland-client",
  "wayland-protocols-wlr",
  "winit",

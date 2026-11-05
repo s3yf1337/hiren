@@ -825,12 +825,14 @@ mod atlus_theme_tests {
     use crate::launcher::{LauncherState, ObservableState};
     use crate::ui_runtime::theme::Theme;
 
-    fn load() -> (Theme, impl Fn(&str, f32, &str) -> f32) {
+    fn load() -> (Theme, impl Fn(&str, f32, &str, u16) -> f32) {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("themes/atlus/theme.toml");
         let t = Theme::load_from_file(&path).expect("load atlus");
         let engine = crate::ui_runtime::text::TextEngine::new();
         engine.load_fonts_from_dir(path.parent().unwrap());
-        let meas = move |t: &str, size: f32, family: &str| engine.measure(t, size, cosmic_text::Weight::NORMAL, family);
+        let meas = move |t: &str, size: f32, family: &str, weight: u16| {
+            engine.measure(t, size, cosmic_text::Weight(weight), family)
+        };
         (t, meas)
     }
 

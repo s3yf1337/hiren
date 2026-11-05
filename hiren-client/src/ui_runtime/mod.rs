@@ -172,7 +172,9 @@ impl UiRuntime {
         let impulse = self.impulse.sync(&snap);
         let theme = &self.theme;
         let text = self.renderer.borrow().text.clone();
-        let measurer = move |t: &str, size: f32, family: &str| text.measure(t, size, cosmic_text::Weight::NORMAL, family);
+        let measurer = move |t: &str, size: f32, family: &str, weight: u16| {
+            text.measure(t, size, cosmic_text::Weight(weight), family)
+        };
         let mut out = layout::resolve_with(
             theme,
             &snap,
