@@ -73,10 +73,15 @@ pub struct ResolvedNode {
 }
 
 impl ResolvedNode {
-    /// Untransformed bounding rect (center).
+    /// Untransformed bounding rect.
+    ///
+    /// Layout skips degenerate nodes, so the fallback is defensive only: keep
+    /// it at the node's own position, never a stray 1×1 dot at the origin.
     pub fn rect(&self) -> tiny_skia::Rect {
         tiny_skia::Rect::from_xywh(self.x, self.y, self.width, self.height)
-            .unwrap_or_else(|| tiny_skia::Rect::from_xywh(0.0, 0.0, 1.0, 1.0).unwrap())
+            .or_else(|| tiny_skia::Rect::from_xywh(self.x, self.y, 1.0, 1.0))
+            .or_else(|| tiny_skia::Rect::from_xywh(0.0, 0.0, 1.0, 1.0))
+            .unwrap()
     }
 
     /// Whether the point hits this node, inverse-transformed for
@@ -187,6 +192,23 @@ mod tests {
             assert!((apply_easing(0.0, e)).abs() < 1e-6, "{e} at 0");
             assert!((apply_easing(1.0, e) - 1.0).abs() < 1e-6, "{e} at 1");
         }
+    }
+
+    #[test]
+    fn rect_fallback_stays_at_the_node_position() {
+        let mut n = ResolvedNode {
+            id: "n".into(), kind: "Rectangle".into(),
+            x: 42.0, y: 24.0, width: -5.0, height: 10.0,
+            opacity: 1.0, z: 0, visible: true, props: HashMap::new(),
+            text: None, color: None, background: None, radius: 0.0,
+            rotation: 0.0, skew: 0.0, scale: 1.0, points: vec![],
+            animate: vec![], action: None, index: None,
+            clip: None,
+        };
+        let r = n.rect();
+        assert_eq!((r.x(), r.y()), (42.0, 24.0), "degenerate rect must not jump to the origin");
+        n.width = f32::NAN;
+        assert_eq!((n.rect().x(), n.rect().y()), (42.0, 24.0));
     }
 
     #[test]

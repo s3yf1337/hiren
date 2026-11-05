@@ -498,12 +498,10 @@ fn substitute_paths(expr: &str, ctx: &mut EvalContext) -> String {
             let start = i;
             i += 1;
             while i < bytes.len() {
-                if bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' {
-                    i += 1;
-                } else if bytes[i] == b'.'
+                let dotted_path = bytes[i] == b'.'
                     && i + 1 < bytes.len()
-                    && (bytes[i + 1].is_ascii_alphabetic() || bytes[i + 1] == b'_')
-                {
+                    && (bytes[i + 1].is_ascii_alphabetic() || bytes[i + 1] == b'_');
+                if bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || dotted_path {
                     i += 1;
                 } else {
                     break;
@@ -636,7 +634,9 @@ fn looks_like_math(expr: &str) -> bool {
         || expr.contains("index")
         || expr.contains("count")
         || expr.contains("time")
-        || expr.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).any(|t| t == "hit" || t == "hit_type")
+        || expr
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .any(|t| matches!(t, "hit" | "hit_type" | "pi" | "tau"))
 }
 
 fn eval_numeric(expr: &str, ctx: &mut EvalContext) -> Option<f64> {
@@ -1032,13 +1032,13 @@ mod tests {
         s.query = "00".into();
         let mut c = ctx(&s);
         c.locals.insert("item_id".into(), "00".into());
-        assert_eq!(eval_bool("item_id == '00'", &mut c, false), true);
-        assert_eq!(eval_bool("item_id == '0'", &mut c, false), false);
-        assert_eq!(eval_bool("item_id != '0'", &mut c, false), true);
+        assert!(eval_bool("item_id == '00'", &mut c, false));
+        assert!(!eval_bool("item_id == '0'", &mut c, false));
+        assert!(eval_bool("item_id != '0'", &mut c, false));
         // Unquoted numeric comparisons stay numeric.
         c.locals.insert("count".into(), "2".into());
-        assert_eq!(eval_bool("count == 2", &mut c, false), true);
-        assert_eq!(eval_bool("launcher.results_count == 0", &mut c, false), true);
+        assert!(eval_bool("count == 2", &mut c, false));
+        assert!(eval_bool("launcher.results_count == 0", &mut c, false));
     }
 
     #[test]
@@ -1074,6 +1074,8 @@ mod tests {
         assert!((eval_f32("pi", &mut c, -1.0) - std::f32::consts::PI).abs() < 1e-5);
         assert!((eval_f32("tau", &mut c, -1.0) - std::f32::consts::TAU).abs() < 1e-5);
         assert_eq!(eval_f32("round(pi * 100)", &mut c, -1.0), 314.0);
+        // Bare pi/tau must also pass the arithmetic fast-reject gate.
+        assert!((eval_f32("pi * 2", &mut c, -1.0) - std::f32::consts::TAU).abs() < 1e-3);
     }
 
     #[test]
