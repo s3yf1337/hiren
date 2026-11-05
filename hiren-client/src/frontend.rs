@@ -5,8 +5,9 @@
 //! `UiKey`/`UiMods`/click coordinates and call into this; nothing backend-
 //! specific leaks into launcher behavior, and nothing here knows Wayland.
 
-use crate::config::LauncherConfig;
+use crate::config::{KeyBinding, LauncherConfig, Modifiers};
 use crate::launcher::ObservableState;
+use crate::modes::{self, LaunchErrors};
 use crate::ui_runtime::node::{NodeAction, ResolvedNode};
 use crate::ui_runtime::state_bridge::SearchBridge;
 use crate::ui_runtime::{theme::Theme, UiRuntime};
@@ -46,6 +47,40 @@ pub enum Outcome {
     Exit,
 }
 
+/// Как запускать активированную запись.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LaunchMode {
+    /// Обычный запуск: `Exec=` напрямую (или в терминале, если запись
+    /// пришла с `Terminal=true` от daemon).
+    Plain,
+    /// Запуск в терминале из `[terminal]` конфига (Ctrl+Enter по умолчанию).
+    Terminal,
+    /// Пользовательский префикс из `[[bindings]] prefix` (shell-обёртка).
+    Custom(String),
+}
+
+/// Выбрать режим запуска по биндингу для Return.
+///
+/// `Ctrl+Return` без явного `prefix` запускает в терминале, используя
+/// `[terminal] command/exec_flag` из конфига — раньше этот конфиг
+/// парсился, но нигде не применялся.
+pub fn resolve_launch_mode(bindings: &[KeyBinding], ctrl: bool) -> LaunchMode {
+    let flag = if ctrl { Modifiers::CTRL } else { 0 };
+    let binding = bindings.iter().find(|b| {
+        b.key_name == "return"
+            && (b.modifiers.0 & flag) == flag
+            && (b.modifiers.0 & !flag) == 0
+    });
+    match binding {
+        Some(b) => match &b.prefix {
+            Some(prefix) if !prefix.trim().is_empty() => LaunchMode::Custom(prefix.clone()),
+            _ if b.modifiers.contains(Modifiers::CTRL) => LaunchMode::Terminal,
+            _ => LaunchMode::Plain,
+        },
+        None => LaunchMode::Plain,
+    }
+}
+
 pub struct AppCore {
     pub runtime: UiRuntime,
     pub state: Rc<ObservableState>,
@@ -62,6 +97,11 @@ pub struct AppCore {
     /// When the theme binds `launcher.launching`, close is deferred so exit
     /// motion can play. Instant close if the theme does not use it.
     delay_exit: Option<Instant>,
+    /// Ошибки запуска из reaper-потоков (см. `modes::spawn_monitored`).
+    launch_errors: LaunchErrors,
+    /// Бэкенд должен немедленно отпустить эксклюзивный клавиатурный захват,
+    /// чтобы запущенное приложение получило клавиатуру.
+    release_grab: bool,
 }
 
 impl AppCore {
@@ -99,6 +139,8 @@ impl AppCore {
             last_uses_impulse: false,
             size,
             delay_exit: None,
+            launch_errors: modes::new_launch_errors(),
+            release_grab: false,
         }
     }
 
@@ -142,6 +184,17 @@ impl AppCore {
             || self.delay_exit.map(|d| Instant::now() >= d).unwrap_or(false)
     }
 
+    /// Сколько осталось до конца exit-анимации (для pacing'а poll-цикла без
+    /// busy-spin). `None`, когда задержки нет.
+    pub fn exit_delay_remaining_ms(&self) -> Option<i32> {
+        self.delay_exit.map(|deadline| {
+            deadline
+                .saturating_duration_since(Instant::now())
+                .as_millis()
+                .min(i32::MAX as u128) as i32
+        })
+    }
+
     /// Keep rendering while animations are running, the theme uses `time`,
     /// an impact envelope is decaying, or a launch exit is in flight.
     pub fn needs_frame(&self) -> bool {
@@ -151,6 +204,41 @@ impl AppCore {
     /// Theme wants impulse frames and the envelope is still live.
     pub fn impulse_ticking(&self) -> bool {
         self.last_uses_impulse && self.runtime.impulse_active()
+    }
+
+    /// Идёт запуск (или exit-анимация после него): новый ввод/активации
+    /// игнорируются — иначе Enter во время 420 мс анимации запускает второй раз.
+    pub fn launching(&self) -> bool {
+        self.state.with(|s| s.launching) || self.delay_exit.is_some()
+    }
+
+    /// Забрать запрос «отпустить клавиатурный захват» (вызывается бэкендом
+    /// сразу после обработки ввода, который запустил приложение).
+    pub fn take_grab_release(&mut self) -> bool {
+        std::mem::take(&mut self.release_grab)
+    }
+
+    /// Забрать ошибки запуска, накопленные reaper-потоками, и показать их в
+    /// `LauncherState.error`. Вызывается бэкендами каждый цикл кадра.
+    /// Возвращает `true`, если пора перерисоваться.
+    pub fn poll_launch_errors(&mut self) -> bool {
+        let messages = match self.launch_errors.lock() {
+            Ok(mut queue) => std::mem::take(&mut *queue),
+            Err(_) => return false,
+        };
+        if messages.is_empty() {
+            return false;
+        }
+        let message = messages.join("; ");
+        log::warn!("hiren: {message}");
+        self.state.update(|s| {
+            s.error = Some(message);
+            // Запуск не удался — лаунчер остаётся открытым и usable.
+            s.launching = false;
+        });
+        // Отменяем exit-анимацию: показываем ошибку в открытом окне.
+        self.delay_exit = None;
+        true
     }
 
     /// Resolve + render the current frame; returns resolved nodes.
@@ -202,12 +290,17 @@ impl AppCore {
     // -----------------------------------------------------------------
 
     pub fn handle_key(&mut self, key: UiKey, mods: UiMods) -> Outcome {
+        if self.launching() {
+            // Во время exit-анимации окно ещё видно; текст/Enter игнорируются,
+            // Escape позволяет закрыть сразу.
+            return if key == UiKey::Escape { Outcome::Exit } else { Outcome::None };
+        }
         self.reset_idle_timer();
         match key {
             UiKey::Escape => return Outcome::Exit,
             UiKey::Enter => {
-                let prefix = self.enter_prefix(mods.ctrl);
-                return self.activate(None, prefix);
+                let mode = resolve_launch_mode(&self.config.bindings, mods.ctrl);
+                return self.activate(None, mode);
             }
             UiKey::ArrowDown => self.move_selection(1),
             UiKey::ArrowUp => self.move_selection(-1),
@@ -248,17 +341,18 @@ impl AppCore {
         Outcome::None
     }
 
-    fn enter_prefix(&self, ctrl: bool) -> Option<String> {
-        let flag = if ctrl { crate::config::Modifiers::CTRL } else { 0 };
-        self.config
-            .bindings
-            .iter()
-            .find(|b| b.key_name == "return" && (b.modifiers.0 & flag) == flag && (b.modifiers.0 & !flag) == 0)
-            .and_then(|b| b.prefix.clone())
-    }
-
     /// Click at logical (x, y): run the action of the topmost hit node.
     pub fn handle_click(&mut self, x: f64, y: f64, mods: UiMods) -> Outcome {
+        if self.launching() {
+            // Разрешаем только явное «закрыть» — клики по результатам
+            // во время exit-анимации не должны запускать второе приложение.
+            let close = self
+                .topmost_actionable(x, y)
+                .and_then(|node| node.action.clone())
+                .map(|a| a == NodeAction::Close)
+                .unwrap_or(false);
+            return if close { Outcome::Exit } else { Outcome::None };
+        }
         let Some(node) = self.topmost_actionable(x, y) else {
             return Outcome::None;
         };
@@ -266,8 +360,8 @@ impl AppCore {
         self.reset_idle_timer();
         match action {
             NodeAction::Activate(idx) => {
-                let prefix = if mods.ctrl { self.enter_prefix(true) } else { self.enter_prefix(false) };
-                self.activate(idx, prefix)
+                let mode = resolve_launch_mode(&self.config.bindings, mods.ctrl);
+                self.activate(idx, mode)
             }
             NodeAction::Select(idx) => match idx {
                 Some(i) => {
@@ -288,16 +382,22 @@ impl AppCore {
         }
     }
 
-    /// Hover over a result node changes selection to it.
-    pub fn handle_hover(&mut self, x: f64, y: f64) {
+    /// Hover over a result node changes selection to it. Returns `true` when the
+    /// selection actually changed (backends repaint only then).
+    pub fn handle_hover(&mut self, x: f64, y: f64) -> bool {
+        if self.launching() {
+            return false;
+        }
         if let Some(node) = self.topmost_actionable(x, y) {
             if let Some(i) = node.action.as_ref().and_then(|a| a.targeted_index()) {
                 let current = self.state.with(|s| s.selected_index);
                 if i != current {
                     self.select(i);
+                    return true;
                 }
             }
         }
+        false
     }
 
     fn topmost_actionable(&self, x: f64, y: f64) -> Option<&ResolvedNode> {
@@ -311,7 +411,7 @@ impl AppCore {
     // Activation / launch (launcher-owned functionality)
     // -----------------------------------------------------------------
 
-    fn activate(&mut self, idx: Option<usize>, prefix: Option<String>) -> Outcome {
+    fn activate(&mut self, idx: Option<usize>, mode: LaunchMode) -> Outcome {
         let entry = {
             let s = self.state.get();
             let i = idx.unwrap_or(s.selected_index);
@@ -321,8 +421,17 @@ impl AppCore {
         if let Some(i) = idx {
             self.state.update(|s| s.select(i));
         }
-        self.launch(&entry, prefix);
+
+        let errors = self.launch_errors.clone();
+        if let Err(e) = self.execute_entry(&entry, &mode, &errors) {
+            self.report_launch_error(format!("cannot launch {}: {e}", entry.name));
+            return Outcome::None;
+        }
+        self.bridge.record_launch(&entry);
         self.state.update(|s| s.launching = true);
+        // Запущенное приложение должно получить клавиатуру сразу, не дожидаясь
+        // конца exit-анимации (иначе первые нажатия теряются в нашем захвате).
+        self.release_grab = true;
         // Themes that bind `launching` get a short window to play an exit
         // transition. Themes that do not are unchanged (instant close).
         if crate::ui_runtime::layout::theme_uses_token(self.runtime.theme(), &["launching"]) {
@@ -332,32 +441,201 @@ impl AppCore {
         Outcome::Exit
     }
 
-    fn launch(&mut self, entry: &AppEntry, prefix: Option<String>) {
-        if entry.mode == AppMode::Calc {
-            let result = entry.exec.clone();
-            let cmd = if crate::config::cmd_exists("wl-copy") {
-                format!("printf '%s' '{}' | wl-copy", result.replace('\'', "'\\''"))
-            } else if crate::config::cmd_exists("xclip") {
-                format!("printf '%s' '{}' | xclip -selection clipboard", result.replace('\'', "'\\''"))
-            } else {
-                return;
-            };
-            eprintln!("[hiren-client] Calc result copied: {}", result);
-            crate::modes::exec_detached(&cmd);
-            return;
-        }
-        if entry.mode == AppMode::Window {
-            if let Some(w) = self.bridge.sources.get(&AppMode::Window) {
-                w.execute(entry, &self.config);
+    /// Выполнить активацию записи согласно её режиму и выбранному способу.
+    fn execute_entry(
+        &self,
+        entry: &AppEntry,
+        mode: &LaunchMode,
+        errors: &LaunchErrors,
+    ) -> Result<(), String> {
+        match entry.mode {
+            AppMode::Window | AppMode::Calc => {
+                let source = self
+                    .bridge
+                    .sources
+                    .get(&entry.mode)
+                    .ok_or_else(|| format!("{:?} mode is not enabled in config", entry.mode))?;
+                source.execute(entry, &self.config, errors)
             }
-            return;
+            // Drun/Run: план запуска строится здесь, чтобы применить биндинг
+            // Ctrl+Enter / AppEntry.terminal / пользовательский префикс.
+            _ => {
+                let terminal = match mode {
+                    LaunchMode::Terminal => Some(&self.config.terminal),
+                    LaunchMode::Custom(_) => None,
+                    LaunchMode::Plain => modes::entry_requests_terminal(entry)
+                        .then_some(&self.config.terminal),
+                };
+                let user_prefix = match mode {
+                    LaunchMode::Custom(prefix) => Some(prefix.as_str()),
+                    _ => None,
+                };
+                let plan = modes::plan_launch(&entry.exec, terminal, user_prefix)?;
+                eprintln!("[hiren-client] Launching: {} {mode:?}", entry.name);
+                modes::spawn_monitored(&plan, &entry.name, errors)
+            }
         }
-        let exec = match prefix {
-            Some(p) => format!("{p} {}", entry.exec),
-            None => entry.exec.clone(),
+    }
+
+    fn report_launch_error(&mut self, message: String) {
+        eprintln!("[hiren-client] {message}");
+        self.state.update(|s| {
+            s.error = Some(message);
+            s.launching = false;
+        });
+        self.delay_exit = None;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn force_launching_for_test(&mut self) {
+        self.state.update(|s| s.launching = true);
+        self.delay_exit = Some(Instant::now() + Duration::from_millis(420));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Modifiers;
+
+    fn binding(key: &str, key_name: &str, mods: u8, prefix: Option<&str>) -> KeyBinding {
+        KeyBinding {
+            key: key.into(),
+            prefix: prefix.map(str::to_string),
+            modifiers: Modifiers(mods),
+            key_name: key_name.into(),
+        }
+    }
+
+    fn default_like_bindings() -> Vec<KeyBinding> {
+        vec![
+            binding("Return", "return", Modifiers::NONE.0, None),
+            binding("Ctrl+Return", "return", Modifiers::CTRL, None),
+        ]
+    }
+
+    #[test]
+    fn return_without_ctrl_is_plain_launch() {
+        assert_eq!(resolve_launch_mode(&default_like_bindings(), false), LaunchMode::Plain);
+    }
+
+    #[test]
+    fn ctrl_return_defaults_to_terminal_from_config() {
+        // Ранее [terminal] парсился, но Ctrl+Enter запускал без терминала.
+        assert_eq!(resolve_launch_mode(&default_like_bindings(), true), LaunchMode::Terminal);
+    }
+
+    #[test]
+    fn explicit_prefix_wins() {
+        let bindings = vec![
+            binding("Return", "return", Modifiers::NONE.0, None),
+            binding("Ctrl+Return", "return", Modifiers::CTRL, Some("env FOO=1")),
+        ];
+        assert_eq!(
+            resolve_launch_mode(&bindings, true),
+            LaunchMode::Custom("env FOO=1".into())
+        );
+    }
+
+    #[test]
+    fn blank_explicit_prefix_falls_back_to_terminal() {
+        let bindings = vec![binding("Ctrl+Return", "return", Modifiers::CTRL, Some("  "))];
+        assert_eq!(resolve_launch_mode(&bindings, true), LaunchMode::Terminal);
+    }
+
+    #[test]
+    fn no_matching_binding_is_plain() {
+        assert_eq!(resolve_launch_mode(&[], true), LaunchMode::Plain);
+        let only_return = vec![binding("Return", "return", Modifiers::NONE.0, None)];
+        assert_eq!(resolve_launch_mode(&only_return, true), LaunchMode::Plain);
+    }
+
+    #[test]
+    fn ctrl_binding_with_extra_modifiers_is_not_matched() {
+        // Биндинг Ctrl+Shift+Return не должен срабатывать как Ctrl+Return.
+        let bindings = vec![binding(
+            "Ctrl+Shift+Return",
+            "return",
+            Modifiers::CTRL | Modifiers::SHIFT,
+            None,
+        )];
+        assert_eq!(resolve_launch_mode(&bindings, true), LaunchMode::Plain);
+    }
+
+    // -----------------------------------------------------------------
+    // Integration-ish: launch failure surfacing and double-activation guard
+    // -----------------------------------------------------------------
+
+    fn test_core() -> AppCore {
+        let config = LauncherConfig {
+            // Пустая история и отсутствие оконного режима: тесты не трогают
+            // пользовательские файлы и не запускают WM-команды.
+            auto_close_timeout_secs: 0,
+            ..LauncherConfig::default()
         };
-        self.bridge.record_launch(entry);
-        eprintln!("[hiren-client] Launching: {exec}");
-        crate::modes::exec_detached(&exec);
+        let state = ObservableState::new(crate::launcher::LauncherState::new());
+        let bridge = SearchBridge::new(&config);
+        AppCore::new(
+            Theme::fallback(),
+            state,
+            bridge,
+            config,
+            Some((640, 420)),
+            false,
+        )
+    }
+
+    #[test]
+    fn spawn_failure_is_reported_and_launcher_stays_open() {
+        let mut core = test_core();
+        core.state.update(|s| {
+            s.set_results(vec![AppEntry::run(
+                "missing".into(),
+                "Missing".into(),
+                "/nonexistent/hiren-test-binary".into(),
+            )]);
+        });
+        let outcome = core.handle_key(UiKey::Enter, UiMods::default());
+        // Бинарник не найден: ошибка видна в UI, лаунчер остаётся открытым,
+        // а не закрывается с проглоченной ошибкой (раньше — sh -c + /dev/null).
+        assert_eq!(outcome, Outcome::None);
+        let error = core.state.with(|s| s.error.clone());
+        assert!(
+            error.as_deref().unwrap_or("").contains("cannot launch"),
+            "unexpected error: {error:?}"
+        );
+        assert!(!core.state.with(|s| s.launching));
+    }
+
+    #[test]
+    fn double_activation_is_ignored_during_exit_animation() {
+        let mut core = test_core();
+        core.state.update(|s| {
+            s.set_results(vec![AppEntry::run(
+                "missing".into(),
+                "Missing".into(),
+                "/nonexistent/hiren-test-binary".into(),
+            )]);
+        });
+        core.force_launching_for_test();
+
+        // Пока идёт exit-анимация, Enter/текст игнорируются: ошибки запуска
+        // не появляется (иначе второй Enter попытался бы запустить запись).
+        assert_eq!(core.handle_key(UiKey::Enter, UiMods::default()), Outcome::None);
+        assert_eq!(
+            core.handle_key(UiKey::Char("x".into()), UiMods::default()),
+            Outcome::None
+        );
+        assert!(core.state.with(|s| s.error.is_none()));
+        assert!(core.state.with(|s| s.query.is_empty()));
+        // Escape по-прежнему закрывает.
+        assert_eq!(core.handle_key(UiKey::Escape, UiMods::default()), Outcome::Exit);
+    }
+
+    #[test]
+    fn hover_returns_whether_selection_changed() {
+        let mut core = test_core();
+        // Без разрешённых нод ховер ничего не меняет.
+        assert!(!core.handle_hover(10.0, 10.0));
     }
 }

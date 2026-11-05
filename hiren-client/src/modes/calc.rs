@@ -4,7 +4,7 @@
 //! abs(), floor(), ceil(), round(), log(), ln(), exp(), pi, e,
 //! скобки, унарный минус, числа с плавающей точкой.
 
-use super::{exec_detached, SearchMode, SearchResult};
+use super::{clipboard_command, spawn_with_stdin, LaunchErrors, SearchMode, SearchResult};
 use crate::config::LauncherConfig as Config;
 use hiren_shared::AppEntry;
 
@@ -33,7 +33,7 @@ impl CalcMode {
         if (value - rounded).abs() < 1e-10 {
             return format!("{}", rounded as i64);
         }
-        // Иначе 6 знаков после запятой, обрезаем trailing zeros
+        // Иначе 10 знаков после запятой, обрезаем trailing zeros
         let s = format!("{:.10}", value);
         let s = s.trim_end_matches('0');
         let s = s.trim_end_matches('.');
@@ -68,35 +68,20 @@ impl SearchMode for CalcMode {
         }
     }
 
-    fn execute(&self, entry: &AppEntry, _config: &Config) {
-        // Копируем результат в буфер обмена через wl-copy / xclip
+    fn execute(&self, entry: &AppEntry, _config: &Config, errors: &LaunchErrors) -> Result<(), String> {
         let result = &entry.exec;
         if result.is_empty() {
-            return;
+            return Err("calc result is empty".into());
         }
 
         eprintln!("[hiren-client] Calc result: {result}");
 
-        // Пробуем wl-copy (Wayland), затем xclip (X11)
-        let copy_cmd = if crate::config::cmd_exists("wl-copy") {
-            format!("printf '%s' '{}' | wl-copy", shell_escape(result))
-        } else if crate::config::cmd_exists("xclip") {
-            format!(
-                "printf '%s' '{}' | xclip -selection clipboard",
-                shell_escape(result)
-            )
-        } else {
-            eprintln!("[hiren-client] No clipboard tool found (wl-copy/xclip)");
-            return;
-        };
-
-        exec_detached(&copy_cmd);
+        // wl-copy на Wayland, xclip на X11. Результат уходит на stdin —
+        // без shell и без экранирования кавычек в выражении.
+        let argv = clipboard_command()
+            .ok_or_else(|| "no clipboard tool found (wl-copy/xclip)".to_string())?;
+        spawn_with_stdin(&argv, result, errors)
     }
-}
-
-/// Экранировать строку для использования в одинарных кавычках shell.
-fn shell_escape(s: &str) -> String {
-    s.replace('\'', "'\\''")
 }
 
 #[cfg(test)]
@@ -123,5 +108,20 @@ mod tests {
             }
             SearchResult::Error(e) => panic!("Expected entries, got error: {e}"),
         }
+    }
+
+    #[test]
+    fn test_format_result_integers_without_decimal_part() {
+        assert_eq!(CalcMode::format_result(2.0), "2");
+        assert_eq!(CalcMode::format_result(-7.0), "-7");
+        assert_eq!(CalcMode::format_result(2.5), "2.5");
+    }
+
+    #[test]
+    fn execute_without_result_is_error() {
+        let entry = AppEntry::calc_error("bad".into());
+        let config = Config::default();
+        let errors = super::super::new_launch_errors();
+        assert!(CalcMode::new().execute(&entry, &config, &errors).is_err());
     }
 }

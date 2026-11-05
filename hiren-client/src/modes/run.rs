@@ -3,7 +3,7 @@
 //! Сканирует директории из переменной окружения PATH,
 //! кэширует список исполняемых файлов, выполняет fuzzy-поиск.
 
-use super::{exec_detached, SearchMode, SearchResult};
+use super::{plan_launch, spawn_monitored, LaunchErrors, SearchMode, SearchResult};
 use crate::config::LauncherConfig as Config;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
@@ -116,7 +116,8 @@ impl SearchMode for RunMode {
         SearchResult::Entries(entries)
     }
 
-    fn execute(&self, entry: &AppEntry, _config: &Config) {
-        exec_detached(&entry.exec);
+    fn execute(&self, entry: &AppEntry, _config: &Config, errors: &LaunchErrors) -> Result<(), String> {
+        let plan = plan_launch(&entry.exec, None, None)?;
+        spawn_monitored(&plan, &entry.name, errors)
     }
 }
