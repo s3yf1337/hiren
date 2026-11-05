@@ -87,7 +87,7 @@ props = { color = "#1d1d1f", font_size = "17", font_weight = "400", align = "lef
 [[nodes]]
 id = "caret"
 type = "Rectangle"
-x = "77 + text_width(launcher.query, 17)"
+x = "77 + text_width(launcher.query, 17, '', 400)"
 y = "46"
 width = "2"
 height = "28"
