@@ -153,6 +153,7 @@ impl UiRuntime {
                     match Theme::load_from_file(&path) {
                         Ok(new_theme) => {
                             self.theme = new_theme;
+                            self.renderer.borrow_mut().clear_caches();
                             self.renderer.borrow().text.load_fonts_from_dir(&self.theme.base_dir);
                             log::info!("Theme reloaded: {}", path.display());
                             return true;
@@ -199,34 +200,57 @@ impl UiRuntime {
         // Apply declared animations to x/y/width/height/opacity/rotation/scale/skew.
         let mut anim = self.anim.borrow_mut();
         for n in out.nodes.iter_mut() {
-            for a in &n.animate {
+            // Snapshot every target from the layout values *before* any animation
+            // retargets the node: two entries for one property (a base motion and
+            // a select-trigger replay) must both aim at the layout value, not at
+            // each other's intermediate frame value. Reading targets lazily made
+            // the second entry chase the first entry's current value forever.
+            let anims = std::mem::take(&mut n.animate);
+            let targets: Vec<Option<f32>> = anims
+                .iter()
+                .map(|a| match a.property.as_str() {
+                    "x" => Some(n.x),
+                    "y" => Some(n.y),
+                    "width" => Some(n.width),
+                    "height" => Some(n.height),
+                    "opacity" => Some(n.opacity),
+                    "rotation" => Some(n.rotation),
+                    "scale" => Some(n.scale),
+                    "skew" => Some(n.skew),
+                    _ => None,
+                })
+                .collect();
+            let node_id = n.id.clone();
+            for (a, target) in anims.iter().zip(targets) {
+                let Some(target) = target else {
+                    self.diag
+                        .borrow_mut()
+                        .warn(&node_id, "animate", &format!("unknown property `{}`", a.property));
+                    continue;
+                };
                 let gen = match a.trigger.as_deref() {
                     Some("select") => format!("#s{}", impulse.select_gen),
                     Some("type") => format!("#t{}", impulse.type_gen),
                     Some(other) => {
-                        let (id, t) = (n.id.clone(), other.to_string());
-                        self.diag.borrow_mut().warn(&id, "animate", &format!("unknown trigger `{t}`"));
+                        self.diag
+                            .borrow_mut()
+                            .warn(&node_id, "animate", &format!("unknown trigger `{other}`"));
                         String::new()
                     }
                     None => String::new(),
                 };
-                let key = format!("{}:{}{}", n.id, a.property, gen);
-                let target = match a.property.as_str() {
-                    "x" => n.x,
-                    "y" => n.y,
-                    "width" => n.width,
-                    "height" => n.height,
-                    "opacity" => n.opacity,
-                    "rotation" => n.rotation,
-                    "scale" => n.scale,
-                    "skew" => n.skew,
-                    other => {
-                        let (id, prop) = (n.id.clone(), other.to_string());
-                        self.diag.borrow_mut().warn(&id, "animate", &format!("unknown property `{prop}`"));
-                        continue;
-                    }
-                };
-                let v = anim.animate(&key, target, a.duration_ms, a.delay_ms, &a.easing, a.spring.clone(), a.from_value);
+                let base_key = format!("{node_id}:{}", a.property);
+                let key = if gen.is_empty() { base_key.clone() } else { format!("{base_key}{gen}") };
+                let v = anim.animate(
+                    &key,
+                    target,
+                    a.duration_ms,
+                    a.delay_ms,
+                    &a.easing,
+                    a.spring.clone(),
+                    a.from_value,
+                    (!gen.is_empty()).then_some(base_key.as_str()),
+                );
                 match a.property.as_str() {
                     "x" => n.x = v,
                     "y" => n.y = v,
@@ -239,6 +263,7 @@ impl UiRuntime {
                     _ => {}
                 }
             }
+            n.animate = anims;
         }
         anim.tick();
         out
