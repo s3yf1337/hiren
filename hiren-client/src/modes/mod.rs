@@ -50,13 +50,26 @@ pub trait SearchMode {
     /// Выполнить поиск по запросу и вернуть результаты.
     fn search(&self, query: &str) -> SearchResult;
 
-    /// Запустить выбранную запись. Ошибка возвращается для показа в UI.
-    fn execute(
+    /// Запустить выбранную запись (legacy entry point без отчёта об ошибках).
+    ///
+    /// Оставлен для внешних реализаций/тестов; новый код вызывает
+    /// `execute_with`, который умеет возвращать ошибку в UI.
+    fn execute(&self, entry: &AppEntry, config: &Config);
+
+    /// Запустить запись и сообщить о быстром падении процесса в `errors`
+    /// (очередь вычитывает `AppCore::poll_launch_errors`).
+    ///
+    /// По умолчанию вызывает `execute` и считается успешным.
+    fn execute_with(
         &self,
         entry: &AppEntry,
         config: &Config,
         errors: &LaunchErrors,
-    ) -> Result<(), String>;
+    ) -> Result<(), String> {
+        let _ = errors;
+        self.execute(entry, config);
+        Ok(())
+    }
 
     /// Инициализировать режим (загрузить кэш, открыть соединения и т.д.).
     fn init(&mut self, _config: &Config) {}
@@ -202,15 +215,10 @@ pub fn plan_launch(
 
 /// Запросила ли запись запуск в терминале (`.desktop` `Terminal=true`).
 ///
-/// Поле `AppEntry::terminal` добавляет ветка daemon/security; чтобы клиент
-/// собирался и со старым `hiren-shared`, и после её мержа, значение читается
-/// через serde (`#[serde(default)]` → отсутствующее поле означает `false`).
-/// JSON-roundtrip происходит только при активации записи, не в поиске.
+/// Поле приходит от daemon (`#[serde(default)]`): старые daemon'ы/кэши без
+/// поля дают `false` и запускаются как обычно.
 pub fn entry_requests_terminal(entry: &AppEntry) -> bool {
-    serde_json::to_value(entry)
-        .ok()
-        .and_then(|value| value.get("terminal").and_then(|t| t.as_bool()))
-        .unwrap_or(false)
+    entry.terminal
 }
 
 /// Запустить argv напрямую, без shell. stdout/stderr → /dev/null, stdin → close.

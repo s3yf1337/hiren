@@ -948,18 +948,20 @@ key = "Ctrl+Return"
     #[test]
     fn theme_roots_priority_order() {
         let tmp = tempfile::tempdir().unwrap();
+        let exe_dir = tmp.path().join("prefix/bin");
+        let data_home = tmp.path().join("data-home");
         let paths = search_paths(
             tmp.path(),
+            &data_home,
             tmp.path(),
-            tmp.path(),
-            tmp.path(),
+            &exe_dir,
             Some(&tmp.path().join("dev")),
         );
         let roots = theme_roots_from(&paths);
         assert_eq!(roots[0], tmp.path().join("hiren/themes"));
-        assert!(roots.contains(&tmp.path().join("themes")));
-        assert!(roots.contains(&tmp.path().join("share/hiren/themes")));
-        assert!(roots.contains(&tmp.path().join("hiren/themes"))); // data_home, dedup
+        assert!(roots.contains(&exe_dir.join("themes")));
+        assert!(roots.contains(&tmp.path().join("prefix/share/hiren/themes")));
+        assert!(roots.contains(&data_home.join("hiren/themes")));
         assert_eq!(roots.last().unwrap(), &tmp.path().join("dev"));
     }
 
@@ -989,7 +991,8 @@ key = "Ctrl+Return"
         assert_eq!(find_theme_in("atlus", &roots, None), Some(user_theme));
 
         // Установленная в prefix/share тоже находится.
-        let share_theme = write_theme(&exe_dir.join("../share/hiren/themes/macos"));
+        let share_root = exe_dir.parent().unwrap().join("share/hiren/themes");
+        let share_theme = write_theme(&share_root.join("macos"));
         assert_eq!(find_theme_in("macos", &roots, None), Some(share_theme));
 
         // XDG_DATA_DIRS/hiren/themes.

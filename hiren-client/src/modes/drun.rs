@@ -30,7 +30,13 @@ impl SearchMode for DrunMode {
         }
     }
 
-    fn execute(&self, entry: &AppEntry, config: &Config, errors: &LaunchErrors) -> Result<(), String> {
+    fn execute(&self, entry: &AppEntry, config: &Config) {
+        if let Err(e) = self.execute_with(entry, config, &super::new_launch_errors()) {
+            log::warn!("hiren: cannot launch {}: {e}", entry.name);
+        }
+    }
+
+    fn execute_with(&self, entry: &AppEntry, config: &Config, errors: &LaunchErrors) -> Result<(), String> {
         // Exec из .desktop запускается напрямую (без sh -c): field-коды уже
         // вырезаны демоном, а shell-интерпретация ломала бы кавычки/спецсимволы.
         let terminal = entry_requests_terminal(entry).then_some(&config.terminal);

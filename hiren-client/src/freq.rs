@@ -441,8 +441,11 @@ mod tests {
         let loaded = FreqHistory::load_from_path(&path);
         assert!(loaded.counts.len() <= MAX_ENTRIES, "entries not pruned");
         assert_eq!(loaded.lookup("overflow"), MAX_COUNT);
-        // Самые частые записи сохранены.
-        assert_eq!(loaded.lookup(&format!("app{}", MAX_ENTRIES + 99)), (MAX_ENTRIES + 99) as u64);
+        // Самые частые записи сохранены (app611 имеет count 612).
+        assert_eq!(
+            loaded.lookup(&format!("app{}", MAX_ENTRIES + 99)),
+            (MAX_ENTRIES + 100) as u64
+        );
     }
 
     #[test]

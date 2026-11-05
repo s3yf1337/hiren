@@ -455,7 +455,7 @@ impl AppCore {
                     .sources
                     .get(&entry.mode)
                     .ok_or_else(|| format!("{:?} mode is not enabled in config", entry.mode))?;
-                source.execute(entry, &self.config, errors)
+                source.execute_with(entry, &self.config, errors)
             }
             // Drun/Run: план запуска строится здесь, чтобы применить биндинг
             // Ctrl+Enter / AppEntry.terminal / пользовательский префикс.
@@ -568,9 +568,10 @@ mod tests {
 
     fn test_core() -> AppCore {
         let config = LauncherConfig {
-            // Пустая история и отсутствие оконного режима: тесты не трогают
-            // пользовательские файлы и не запускают WM-команды.
+            // Никаких активных режимов: тесты не трогают IPC/WM и не
+            // перезаписывают пользовательские файлы.
             auto_close_timeout_secs: 0,
+            modes: crate::config::ModeConfig { drun: false, run: false, window: false, calc: false },
             ..LauncherConfig::default()
         };
         let state = ObservableState::new(crate::launcher::LauncherState::new());

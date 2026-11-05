@@ -68,7 +68,13 @@ impl SearchMode for CalcMode {
         }
     }
 
-    fn execute(&self, entry: &AppEntry, _config: &Config, errors: &LaunchErrors) -> Result<(), String> {
+    fn execute(&self, entry: &AppEntry, config: &Config) {
+        if let Err(e) = self.execute_with(entry, config, &super::new_launch_errors()) {
+            log::warn!("hiren: cannot copy calc result: {e}");
+        }
+    }
+
+    fn execute_with(&self, entry: &AppEntry, _config: &Config, errors: &LaunchErrors) -> Result<(), String> {
         let result = &entry.exec;
         if result.is_empty() {
             return Err("calc result is empty".into());
@@ -122,6 +128,6 @@ mod tests {
         let entry = AppEntry::calc_error("bad".into());
         let config = Config::default();
         let errors = super::super::new_launch_errors();
-        assert!(CalcMode::new().execute(&entry, &config, &errors).is_err());
+        assert!(CalcMode::new().execute_with(&entry, &config, &errors).is_err());
     }
 }

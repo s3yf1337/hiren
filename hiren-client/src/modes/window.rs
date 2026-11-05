@@ -255,7 +255,13 @@ impl SearchMode for WindowMode {
         SearchResult::Entries(entries)
     }
 
-    fn execute(&self, entry: &AppEntry, _config: &Config, errors: &LaunchErrors) -> Result<(), String> {
+    fn execute(&self, entry: &AppEntry, config: &Config) {
+        if let Err(e) = self.execute_with(entry, config, &super::new_launch_errors()) {
+            log::warn!("hiren: cannot activate window {}: {e}", entry.name);
+        }
+    }
+
+    fn execute_with(&self, entry: &AppEntry, _config: &Config, errors: &LaunchErrors) -> Result<(), String> {
         let argv = render_activate_argv(&self.activate_cmd, &entry.exec)?;
         eprintln!("[hiren-client] Activating window: {} ({})", entry.name, argv.join(" "));
         spawn_monitored(&LaunchPlan::Argv(argv), &entry.name, errors)
