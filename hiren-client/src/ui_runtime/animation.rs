@@ -55,11 +55,18 @@ impl Motion {
         let elapsed = now.duration_since(self.started()).as_secs_f32();
         match self {
             Motion::Easing { duration_ms, delay_ms, .. } => elapsed * 1000.0 >= (*delay_ms + *duration_ms) as f32,
-            Motion::Spring { to, params, .. } => {
-                if elapsed >= 5.0 {
+            Motion::Spring { to, delay_ms, params, .. } => {
+                let delay = *delay_ms as f32 / 1000.0;
+                // A delayed spring has not started yet: it is *not* settled, or
+                // tick() would drop it and the animation would never play.
+                if elapsed <= delay {
+                    return false;
+                }
+                let t = elapsed - delay;
+                if t >= 5.0 {
                     return true;
                 }
-                let x = integrate_spring(self.start_value(), *to, params, elapsed);
+                let x = integrate_spring(self.start_value(), *to, params, t);
                 (x - *to).abs() < 0.01
             }
         }
@@ -125,6 +132,11 @@ pub struct AnimationState {
     /// Last resolved value per key (before animation) — used as the `from` for
     /// transitions when a new target arrives.
     current: HashMap<String, f32>,
+    /// Latest trigger-generation key per `node:property` base. Trigger keys are
+    /// unique per event (`…:scale#s12`), so the previous generation's motion and
+    /// remembered value are dead the moment a newer one arrives — dropping them
+    /// here keeps `current` from growing forever as the user keeps selecting.
+    trigger_keys: HashMap<String, String>,
 }
 
 impl AnimationState {
@@ -133,6 +145,9 @@ impl AnimationState {
     /// * `from_override` — start value for the first appearance (enter animation),
     ///   e.g. `from = 0` for a fade-in.
     /// * `delay_ms` — final (already per-instance resolved) delay.
+    /// * `trigger_base` — for `trigger = "select" | "type"` replays: the stable
+    ///   `node:property` key the current generation key was derived from. Passing
+    ///   it lets a new generation retire the previous one instead of leaking it.
     #[allow(clippy::too_many_arguments)]
     pub fn animate(
         &mut self,
@@ -143,8 +158,17 @@ impl AnimationState {
         easing: &str,
         spring: Option<super::theme::SpringDef>,
         from_override: Option<f32>,
+        trigger_base: Option<&str>,
     ) -> f32 {
         let eps = 0.01;
+        if let Some(base) = trigger_base {
+            if let Some(old) = self.trigger_keys.insert(base.to_string(), key.to_string()) {
+                if old != key {
+                    self.anims.remove(&old);
+                    self.current.remove(&old);
+                }
+            }
+        }
         let current = self.current.get(key).copied();
         let running = self.anims.get(key);
 
@@ -182,6 +206,18 @@ impl AnimationState {
     pub fn tick(&mut self) {
         self.anims.retain(|_, a| !a.settled());
     }
+
+    /// Number of remembered values (tests/diagnostics: must not grow forever).
+    #[cfg(test)]
+    fn remembered(&self) -> usize {
+        self.current.len()
+    }
+
+    /// Number of tracked trigger generations (tests).
+    #[cfg(test)]
+    fn trigger_generations(&self) -> usize {
+        self.trigger_keys.len()
+    }
 }
 
 #[cfg(test)]
@@ -200,9 +236,9 @@ mod tests {
     #[test]
     fn easing_transitions_and_finish() {
         let mut st = AnimationState::default();
-        let v1 = st.animate("sel:y", 100.0, 200, 0, "ease_out_cubic", None, None);
+        let v1 = st.animate("sel:y", 100.0, 200, 0, "ease_out_cubic", None, None, None);
         assert_eq!(v1, 100.0); // first appearance without from_override: no anim
-        let v2 = st.animate("sel:y", 200.0, 200, 0, "ease_out_cubic", None, None);
+        let v2 = st.animate("sel:y", 200.0, 200, 0, "ease_out_cubic", None, None, None);
         assert!(v2 < 200.0, "starts from previous value");
         assert!(st.is_active());
     }
@@ -210,8 +246,58 @@ mod tests {
     #[test]
     fn enter_animation_from() {
         let mut st = AnimationState::default();
-        let v = st.animate("row-0:opacity", 1.0, 300, 0, "ease_out_cubic", None, Some(0.0));
+        let v = st.animate("row-0:opacity", 1.0, 300, 0, "ease_out_cubic", None, Some(0.0), None);
         assert!(v < 0.2, "enters from 0, got {v}");
         assert!(st.is_active());
+    }
+
+    #[test]
+    fn delayed_spring_is_not_settled_before_its_delay() {
+        // Regression: settled() ignored delay_ms and integrated from the start,
+        // so a spring with a delay looked finished before it began (tick() then
+        // dropped it, value() returned the start value → the delay never played).
+        let p = SpringParams { stiffness: 400.0, damping: 40.0, mass: 1.0 };
+        let started = Instant::now() - std::time::Duration::from_millis(300);
+        let delayed = Motion::Spring { from: 0.0, to: 100.0, delay_ms: 400, params: p.clone(), started };
+        assert!(!delayed.settled(Instant::now()), "delayed spring must not report settled during its delay");
+        // Same motion past delay + settle time is settled.
+        let old_start = Instant::now() - std::time::Duration::from_millis(400 + 3000);
+        let done = Motion::Spring { from: 0.0, to: 100.0, delay_ms: 400, params: p.clone(), started: old_start };
+        assert!(done.settled(Instant::now()), "spring past delay + settle time is settled");
+    }
+
+    #[test]
+    fn delayed_spring_stays_active_then_plays() {
+        let p = SpringParams::default_params();
+        let started = Instant::now() - std::time::Duration::from_millis(100);
+        let m = Motion::Spring { from: 0.0, to: 100.0, delay_ms: 200, params: p.clone(), started };
+        assert_eq!(m.value(Instant::now()), 0.0, "holds the from value during the delay");
+        assert!(!m.settled(Instant::now()), "waiting is not settled");
+        // 350 ms elapsed − 200 ms delay = 150 ms of spring motion.
+        let started = Instant::now() - std::time::Duration::from_millis(350);
+        let m = Motion::Spring { from: 0.0, to: 100.0, delay_ms: 200, params: p.clone(), started };
+        let v = m.value(Instant::now());
+        assert!(v > 0.0 && v < 100.0, "delayed spring is mid-flight, got {v}");
+    }
+
+    #[test]
+    fn trigger_generations_do_not_leak_remembered_values() {
+        let mut st = AnimationState::default();
+        for gen in 1..=50 {
+            let key = format!("row-0:scale#s{gen}");
+            st.animate(&key, 1.0, 100, 0, "ease_out_cubic", None, Some(1.4), Some("row-0:scale"));
+            st.animate(&key, 1.0, 100, 0, "ease_out_cubic", None, Some(1.4), Some("row-0:scale"));
+        }
+        assert_eq!(st.trigger_generations(), 1, "one base key per animated property");
+        assert_eq!(st.remembered(), 1, "only the live generation is remembered: {}", st.remembered());
+    }
+
+    #[test]
+    fn ordinary_keys_are_not_pruned_as_trigger_generations() {
+        let mut st = AnimationState::default();
+        st.animate("card:x", 10.0, 100, 0, "linear", None, None, None);
+        st.animate("card:x", 20.0, 100, 0, "linear", None, None, None);
+        assert_eq!(st.remembered(), 1);
+        assert_eq!(st.trigger_generations(), 0);
     }
 }
