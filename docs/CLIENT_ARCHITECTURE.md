@@ -59,10 +59,13 @@ touching themes.
 ## Boundary: Launcher vs UI
 
 **Launcher owns** (`frontend.rs` `AppCore`, `launcher.rs`, `modes/`):
-- IPC to the daemon (`/tmp/hiren.socket`), modes: `drun`, `run`, `window`, `calc`
-- `LauncherState { query, results, selected_index, … }`
+- IPC to the daemon (`$XDG_RUNTIME_DIR/hiren.socket`, or `HIREN_SOCKET_PATH`),
+  modes: `drun`, `run`, `window`, `calc`
+- `LauncherState { query, results, selected_index, loading, error, launching }`
 - Frequency history and hybrid freq-weighted ranking
-- Launching: terminal prefix (`Ctrl+Enter`), clipboard for calc results, detached exec
+- Launching: terminal prefix (default `Ctrl+Return`, derived from `[terminal]`;
+  `.desktop` entries with `Terminal=true`), clipboard for calc results,
+  detached exec
 - Window lifecycle: auto-close timeout, theme hot-reload polling
 
 **UI owns** (`ui_runtime/`):
@@ -82,6 +85,7 @@ launcher.results_count             usize
 launcher.selected_index            usize
 launcher.selected_result.name / .exec / .id / .description / .mode / .icon
 launcher.loading                   bool
+launcher.error                     String (protocol/daemon error; empty when none)
 launcher.launching                 bool (true after activate; themes bind this for exit motion)
 window.width / window.height       u32 (logical)
 time                               f32 (seconds since start)
@@ -100,14 +104,51 @@ Helper functions available inside expressions:
 clamp(v,lo,hi)`, `mod(a,n)` (Euclidean remainder; `mod(-1, 5)` is `4`),
 `hash(n)` (deterministic `0..1`), `shake(amp, seed)` (select-impact
 offset), `type_shake(amp, seed)` (query-impact offset),
-`text_width(text, font_size)` (measured — usable inside
+`text_width(text, font_size[, family[, weight]])` (measured — usable inside
 arithmetic), `initial(text)` (first grapheme, for icon chips).
+
+---
+
+## Daemon, `.desktop`, and IPC
+
+The daemon is the only process that parses `.desktop` files. It scans the
+`applications/` trees of `XDG_DATA_HOME` and every `XDG_DATA_DIRS` entry
+recursively, which covers Flatpak exports and `/usr/local/share` installs.
+Desktop-id precedence follows the XDG ordering: the first directory that
+provides an id wins, and `Hidden=true` in a higher-priority directory is a
+tombstone that hides a same-id entry from lower-priority directories.
+
+Entry handling:
+
+- `Exec` field codes: `%c` → localized name, `%i` → the pair
+  `--icon <Icon>`, `%k` → the `.desktop` file path, `%%` → `%`;
+  file/URL codes (`%f %F %u %U %d %D %n %N %v %m`) are removed.
+- Localized `Name[...]`/`Comment[...]` are selected using the current locale
+  (`LANG`/`LC_MESSAGES`), falling back to the untranslated key.
+- `OnlyShowIn` / `NotShowIn` are matched against `XDG_CURRENT_DESKTOP`;
+  `NoDisplay=true` and a failing `TryExec` hide the entry.
+- `Terminal=true` entries are launched through `[terminal] command` +
+  `exec_flag`, the same prefix the default `Ctrl+Return` binding uses.
+
+The client connects to `$XDG_RUNTIME_DIR/hiren.socket` (mode `0600`, peer uid
+checked; one daemon per user; stale sockets are removed). `HIREN_SOCKET_PATH`
+overrides the location for tests/advanced setups and must agree on both sides.
+Wire format is a 4-byte little-endian length followed by a JSON frame. Frames
+are capped at 256 KiB, query length is capped, concurrent connections and
+read/write timeout are bounded, and malformed or oversized traffic closes the
+connection instead of growing memory. Failures are not swallowed: the error is
+printed to stderr and stored in `launcher.error` so a theme can surface it.
 
 ---
 
 ## Theme Format
 
-A theme is a directory with `theme.toml` (plus optional `assets/`):
+A theme is a directory with `theme.toml` (plus optional `assets/`, `fonts/`,
+and any other runtime data). The schema is strict: unknown fields and
+wrong-typed values produce a warning or a load error, window dimensions must be
+positive, spring parameters are validated, and static `font_size` literals must
+be in `0.5..=4096` (dynamic sizes are clamped at render time). The bundled
+themes all pass `--validate-themes`; run it after editing a theme.
 
 ```toml
 [meta]
@@ -115,7 +156,7 @@ name = "default"
 description = "Polished vertical launcher"
 
 [window]
-width = 640            # exact size (logical px)
+width = 640            # exact size (logical px); must be positive
 # width/height may be omitted → falls back to config width/height
 transparent = true
 time_hz = 60           # optional; vsync for time-driven idle (default ~20 fps)
@@ -206,9 +247,10 @@ A property value is either a **literal** (`x = 32`, `text = "Firefox"`) or an
   a ternary must be the whole expression; inside larger arithmetic, use `min`/`max`)
 - state paths (`launcher.*`, `window.*`, `time`, `hit`, `hit_type`, `since_select`,
   `since_type`), repeater locals
-- `text_width(text, size[, family])` — measured width, inlines into arithmetic.
-  A comma-separated `family` (`'Anton, Archivo Black, Titan One'`) measures as
-  ransom type so plates sized to mixed-font names stay tight.
+- `text_width(text, size[, family[, weight]])` — measured width, inlines into
+  arithmetic. The optional `weight` selects the font weight used for
+  measurement. A comma-separated `family` (`'Anton, Archivo Black, Titan One'`)
+  measures as ransom type so plates sized to mixed-font names stay tight.
 
 ### Geometry & type primitives
 
@@ -227,13 +269,17 @@ A property value is either a **literal** (`x = 32`, `text = "Firefox"`) or an
 - Text styling: `font_family = "Anton"` (system font **or** a TTF/OTF dropped in
   `themes/<name>/fonts/` — loaded on start and hot-reload; falls back to sans
   when missing), `outline = "3px #000000"` (comic outline, ring blits),
-  `text_shadow = "3px 3px #000000"` (hard sticker offset under the outline),
+  `text_shadow = "3px 3px #000000"` (supported: hard sticker offset under the
+  outline; the value is `dx dy color`, offsets in logical px),
   `wrap = "none"` (single-line; default word-wraps to the node box — a search
-  query with a space otherwise drops the rest of the line),
+  query with a space otherwise drops the rest of the line; the no-wrap margin
+  is derived from font metrics, not a fixed guess),
   `text_case = "upper"` (case-fold at layout time), `ransom = "true"` with
   `ransom_fonts = "Anton, Archivo Black, Titan One"` (per-letter mix of family /
   weight / size / rotation / case — the P5 cut-paper look; `text_width` with a
-  comma-separated family list uses the same mix).
+  comma-separated family list uses the same mix). Text alpha and antialiasing
+  are composited correctly, so translucent text and `text_shadow` blend
+  instead of turning opaque or fringed.
 - `[window] time_hz = 60` — `time` bindings without a running spring normally
   throttle to ~20 fps (caret blink). Sharp caret + impact frames (atlus) set 60.
 - String helpers in expressions: `upper(x)` / `lower(x)` alongside `initial(x)`;
@@ -255,7 +301,9 @@ A property value is either a **literal** (`x = 32`, `text = "Firefox"`) or an
 `delegate` once per item with isolated locals. `Repeater` layout modes:
 
 - `vertical` — flowing list (`item_height` + `gap`)
-- `circular` — items placed on a ring: `angle = index/count * tau - pi/2`, `radius`
+- `circular` — items placed on a ring: `angle = index/count * tau - pi/2`, `radius`;
+  slot angles and window centering are computed with the correct wrapped ring
+  position (the old off-by-one window math is fixed)
 - `row` — horizontal (delegates position themselves; scissored)
 - `free` — no automatic offset, no scissor (decorative scatter; delegates place themselves)
 
@@ -294,16 +342,23 @@ close               close the launcher
 ```
 
 Keyboard mapping (both backends → `UiKey`/`UiMods` → `AppCore::handle_key`):
-characters, `Backspace`, `Escape` (close), `Enter` (activate),
-`Ctrl+Enter` (terminal prefix from config bindings), `↑/↓` move,
-`Home/End`, `PageUp/PageDown`, `Tab` (completions). Hover over a row selects it.
+characters, `Backspace` (`Ctrl+Backspace` clears the query), `Escape` (close),
+`Enter` (activate), `Ctrl+Return` (terminal prefix; without an explicit
+`prefix` it is derived from `[terminal] command` + `exec_flag`), `↑/↓` move,
+`Home/End`, `PageUp/PageDown` (±6), `Tab` / `Shift+Tab` (`BackTab`) move the
+selection down/up — `Tab` does **not** do completions. Hover over a row selects
+it. Entries parsed with `Terminal=true` always launch through the terminal
+prefix, regardless of which key activates them.
 
 ---
 
 ## Animations
 
 Per-node `animate` array; component-level `animate` merges onto every delegate
-instance. Properties: `x`, `y`, `width`, `height`, `opacity`, `rotation`, `scale`, `skew`.
+instance. Merge order is component first, then node: entries with the same
+`property` from node level win, so a delegate can override one property while
+inheriting the rest of the component's motion. Properties: `x`, `y`, `width`,
+`height`, `opacity`, `rotation`, `scale`, `skew`.
 
 ```toml
 animate = [
@@ -322,7 +377,10 @@ animate = [
 - `easing` — `linear`, `ease_in/out/in_out_quad`, `…_cubic`, `ease_out_quart`,
   `ease_out_expo`, `ease_out_back`, `ease_out_elastic`, `spring`
 - `spring = { stiffness, damping, mass }` — real damped-oscillator integration
-  (240 Hz fixed step, stateless), e.g. `170/22/1` default: slight overshoot
+  (240 Hz fixed step, stateless), e.g. `170/22/1` default: slight overshoot.
+  All three values must be positive and are validated at load time. Delayed
+  springs are honored: `delay`/`delay_ms` waits before the spring starts
+  integrating, rather than being dropped for spring motion.
 
 **Impact (P5-style, not idle wobble).** `hit` is 1 on open and whenever
 `launcher.selected_index` changes, holds ~2 frames, then decays (~200 ms).
@@ -384,20 +442,41 @@ pixmap. On Wayland the compositor places the window (usually centered).
 ## Diagnostics & Tooling
 
 ```
-hiren-client --theme NAME            theme by name (built-in or ~/.config/hiren/themes/)
-hiren-client --list-themes           list available themes
-hiren-client --validate-themes       load + resolve every theme, print warnings
-hiren-client --screenshot [NAME] --out FILE [--query Q] [--settle-ms N]
-                                     headless render (demo state) → PNG
-hiren-client --width N --height N    override window size
+hiren-client --theme NAME            theme by name (built-in or user theme)
+hiren-client --list-themes           list every discoverable theme
+hiren-client --validate-themes       load + resolve + render built-in AND user themes;
+                                     print warnings/failures, exit non-zero on failure
+hiren-client --screenshot [THEME] --out FILE [--query Q] [--settle-ms N]
+                                     headless render (demo state) → PNG; THEME is
+                                     optional and never consumes the next --flag
+hiren-client --width N --height N    override window size (both required; 1..=8192)
 hiren-client --reload                enable theme hot-reload polling
 hiren-client --no-layer-shell        force the winit backend
 HIREN_DEBUG_NODES=1 (with --screenshot)  dump resolved node geometry
 RUST_LOG=hiren_client=debug          per-frame timing logs
 ```
 
-Theme binding warnings (unknown properties, failed expressions) are collected
-during resolve and printed by the running client and `--validate-themes`.
+`--screenshot` without an explicit theme uses the config theme and writes
+`/tmp/hiren-<theme>.png` unless `--out` is given; `--settle-ms` defaults to 900.
+Because the theme argument is optional, `--screenshot --out file.png` leaves
+`--out` intact.
+
+### Theme discovery
+
+Lookup order (first hit wins):
+
+1. `~/.config/hiren/themes/<name>/`
+2. `themes/` next to the `hiren-client` binary
+3. `$(PREFIX)/share/hiren/themes/<name>/`
+4. `$XDG_DATA_DIRS/hiren/themes/<name>/` (`/usr/local/share`, Flatpak exports, …)
+
+A requested theme that is not found produces a loud warning naming the theme
+and the searched paths, then the built-in fallback is used so a window still
+appears. `--list-themes` shows what is actually available. Theme binding
+warnings (unknown properties, failed expressions) are collected during resolve
+and printed by the running client and `--validate-themes`; schema errors
+(unknown fields, wrong types, invalid sizes or spring parameters) are reported
+the same way.
 
 ---
 
@@ -454,19 +533,29 @@ hiren-client/
 │       ├── color.rs          # color parsing
 │       └── state_bridge.rs   # SearchBridge (modes → ObservableState)
 └── themes/
-    ├── default/  atlus/  hermes/  macos/  layered/  circular/   # theme.toml (+ fonts/)
+    ├── default/  atlus/  circular/  layered/  macos/   # theme.toml (+ fonts/, assets/)
 ```
 
-User themes: `~/.config/hiren/themes/<name>/theme.toml`, selected via
-`~/.config/hiren/config.toml` (`theme = "my"`) or `--theme my`.
+User themes: `~/.config/hiren/themes/<name>/theme.toml`, selected in
+`~/.config/hiren/config.toml` with:
+
+```toml
+[theme]
+name = "my"
+```
+
+or per run with `--theme my`. `--theme` still wins over the config.
 
 ---
 
 ## How to Create a Theme
 
-1. Copy a theme: `cp -r themes/default ~/.config/hiren/themes/my`
+1. Copy a theme directory (including `fonts/` and `assets/` if present):
+   `cp -r themes/default ~/.config/hiren/themes/my`
 2. Edit `~/.config/hiren/themes/my/theme.toml` — window size, colors, layout,
    selector binding, animations. Everything is hot-editable; `--reload` re-reads
-   the file every frame while running.
+   the file every frame while running. The schema is strict, so unknown fields
+   or wrong types are reported instead of being ignored.
 3. Check: `hiren-client --validate-themes`, preview: `hiren-client --screenshot my --out /tmp/my.png`
-4. Run: `hiren-client --theme my`. No Rust rebuild needed.
+4. Run: `hiren-client --theme my`, or set `[theme] name = "my"` in
+   `~/.config/hiren/config.toml`. No Rust rebuild needed.
