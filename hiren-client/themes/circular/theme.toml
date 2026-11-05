@@ -75,7 +75,7 @@ props = { color = "white", font_size = "18", font_weight = "600", align = "left"
 [[nodes]]
 id = "center_caret"
 type = "Rectangle"
-x = "window.width / 2 - 115 + text_width(launcher.query, 18)"
+x = "window.width / 2 - 115 + text_width(launcher.query, 18, '', 600)"
 y = "window.height / 2 - 10"
 width = "2"
 height = "20"

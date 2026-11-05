@@ -133,12 +133,19 @@ struct Inner {
     /// Shaped ransom plans (per-letter mix is deterministic for a given
     /// text/size/font list, so re-planning every frame in `text_width` was
     /// pure waste).
-    ransom_cache: RefCell<HashMap<(String, u32, String), Rc<Vec<RansomGlyph>>>>,
+    ransom_cache: RefCell<HashMap<RansomCacheKey, Rc<Vec<RansomGlyph>>>>,
     /// (requested family, requested weight) → (concrete family to use, weight
     /// that family actually ships). See `resolve_face`.
-    face_cache: RefCell<HashMap<(String, u16), (Option<String>, u16)>>,
+    face_cache: RefCell<HashMap<FaceCacheKey, FaceResolution>>,
     loaded_fonts: RefCell<HashSet<PathBuf>>,
 }
+
+/// Shaped ransom plans: (text, quantized size, joined font list).
+type RansomCacheKey = (String, u32, String);
+/// Resolved faces: (requested family, requested weight).
+type FaceCacheKey = (String, u16);
+/// (concrete family to shape with, weight that family ships).
+type FaceResolution = (Option<String>, u16);
 
 /// Key of the measurement cache: (text, quantized size, weight, family).
 type MeasureKey = (String, u32, u16, String);
@@ -496,6 +503,7 @@ impl TextEngine {
 
     /// Rasterize text into a pixmap of `(w + 2m) x (h + 2m)` where `m` is the
     /// style margin (returned). Handles word wrap, alignment, vertical center.
+    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &self,
         text: &str,
