@@ -130,14 +130,18 @@ Entry handling:
 - `Terminal=true` entries are launched through `[terminal] command` +
   `exec_flag`, the same prefix the default `Ctrl+Return` binding uses.
 
-The client connects to `$XDG_RUNTIME_DIR/hiren.socket` (mode `0600`, peer uid
-checked; one daemon per user; stale sockets are removed). `HIREN_SOCKET_PATH`
-overrides the location for tests/advanced setups and must agree on both sides.
-Wire format is a 4-byte little-endian length followed by a JSON frame. Frames
-are capped at 256 KiB, query length is capped, concurrent connections and
-read/write timeout are bounded, and malformed or oversized traffic closes the
-connection instead of growing memory. Failures are not swallowed: the error is
-printed to stderr and stored in `launcher.error` so a theme can surface it.
+The client connects to `$XDG_RUNTIME_DIR/hiren.socket` (mode `0600`, socket
+owner and peer uid checked; one daemon per user; a live socket makes a second
+daemon exit cleanly, and a stale one is removed only when it belongs to the
+current uid). `HIREN_SOCKET_PATH` overrides the location for tests/advanced
+setups and must agree on both sides; without `XDG_RUNTIME_DIR` the daemon falls
+back to `$TMPDIR/hiren-<uid>.socket` or `/tmp/hiren-<uid>.socket`. Wire format
+is a 4-byte little-endian length followed by a JSON frame. Frames are capped at
+256 KiB, queries at 1024 characters, at most 32 connections are served
+concurrently, and each frame read/write has a 5 s timeout; malformed, slow or
+oversized traffic closes the connection instead of growing memory. Protocol
+version mismatches and daemon errors are returned as an `Error` message, printed
+to stderr and stored in `launcher.error` so a theme can surface them.
 
 ---
 
@@ -347,8 +351,9 @@ characters, `Backspace` (`Ctrl+Backspace` clears the query), `Escape` (close),
 `prefix` it is derived from `[terminal] command` + `exec_flag`), `↑/↓` move,
 `Home/End`, `PageUp/PageDown` (±6), `Tab` / `Shift+Tab` (`BackTab`) move the
 selection down/up — `Tab` does **not** do completions. Hover over a row selects
-it. Entries parsed with `Terminal=true` always launch through the terminal
-prefix, regardless of which key activates them.
+it. `Terminal=true` entries are wrapped in the `[terminal]` command on a normal
+activation (and on `Ctrl+Return`); an explicit `[[bindings]] prefix` overrides
+that wrapper.
 
 ---
 
@@ -444,8 +449,8 @@ pixmap. On Wayland the compositor places the window (usually centered).
 ```
 hiren-client --theme NAME            theme by name (built-in or user theme)
 hiren-client --list-themes           list every discoverable theme
-hiren-client --validate-themes       load + resolve + render built-in AND user themes;
-                                     print warnings/failures, exit non-zero on failure
+hiren-client --validate-themes       load + resolve + render every discovered theme
+                                     (bundled, user, installed); exit non-zero on failure
 hiren-client --screenshot [THEME] --out FILE [--query Q] [--settle-ms N]
                                      headless render (demo state) → PNG; THEME is
                                      optional and never consumes the next --flag
@@ -468,11 +473,14 @@ Lookup order (first hit wins):
 1. `~/.config/hiren/themes/<name>/`
 2. `themes/` next to the `hiren-client` binary
 3. `$(PREFIX)/share/hiren/themes/<name>/`
-4. `$XDG_DATA_DIRS/hiren/themes/<name>/` (`/usr/local/share`, Flatpak exports, …)
+4. `$XDG_DATA_HOME/hiren/themes/<name>/` (usually `~/.local/share`)
+5. `$XDG_DATA_DIRS/hiren/themes/<name>/` (`/usr/local/share`, Flatpak exports, …)
+6. the source-tree `themes/` directory, only in debug builds
 
 A requested theme that is not found produces a loud warning naming the theme
 and the searched paths, then the built-in fallback is used so a window still
-appears. `--list-themes` shows what is actually available. Theme binding
+appears; in `--screenshot` mode the same lookup failure is a hard error and no
+PNG is written. `--list-themes` shows what is actually available. Theme binding
 warnings (unknown properties, failed expressions) are collected during resolve
 and printed by the running client and `--validate-themes`; schema errors
 (unknown fields, wrong types, invalid sizes or spring parameters) are reported

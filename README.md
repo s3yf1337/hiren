@@ -51,7 +51,7 @@ Binaries:
 - `target/release/hiren-daemon` — background daemon (scans `.desktop` files, serves search over IPC)
 - `target/release/hiren-client` — declarative UI launcher (layer-shell on Wayland, winit elsewhere)
 
-Validate every bundled theme (and any themes in `~/.config/hiren/themes/`) without opening a window:
+Validate every discovered theme (bundled, user and installed) without opening a window:
 
 ```bash
 cargo run -p hiren-client --features layer-shell -- --validate-themes
@@ -101,8 +101,8 @@ No GTK4 or other heavy runtime is required.
 | `--theme <name>` | select a theme (built-in or user) for this run |
 | `--width <px> --height <px>` | override the window size; both values are required together and are clamped to `1..=8192` |
 | `--list-themes` | print every discoverable theme name |
-| `--validate-themes` | load + resolve + render all bundled and user themes; report warnings/failures |
-| `--screenshot [THEME] --out FILE [--query Q] [--settle-ms N]` | headless render to PNG. `THEME` is optional (defaults to the config theme); if the next argument starts with `--` it is left alone, so `--screenshot --out x.png` works. `--out` defaults to `/tmp/hiren-<theme>.png`; `--settle-ms` defaults to 900 |
+| `--validate-themes` | load + resolve + render all discovered themes (bundled, user, installed); report warnings/failures |
+| `--screenshot [THEME] --out FILE [--query Q] [--settle-ms N]` | headless render to PNG (`--screenshot=THEME` is equivalent). `THEME` is optional (defaults to the config theme); if the next argument starts with `--` it is left alone, so `--screenshot --out x.png` works. `--out` defaults to `/tmp/hiren-<theme>.png`; `--settle-ms` defaults to 900. A missing theme is an error and writes no PNG |
 | `--no-layer-shell` | force the winit toplevel backend |
 | `--reload` | poll `theme.toml` for changes (development) |
 | `--help` | print the built-in help |
@@ -196,10 +196,13 @@ Theme discovery order:
 1. `~/.config/hiren/themes/<name>/` (user themes take precedence)
 2. `themes/` next to the client binary
 3. `$(PREFIX)/share/hiren/themes/<name>/`
-4. `$XDG_DATA_DIRS/hiren/themes/<name>/` (`/usr/local/share`, Flatpak exports, …)
+4. `$XDG_DATA_HOME/hiren/themes/<name>/` (usually `~/.local/share`)
+5. `$XDG_DATA_DIRS/hiren/themes/<name>/` (`/usr/local/share`, Flatpak exports, …)
 
 A missing requested theme is reported loudly by name (with the search paths);
-it is not silently replaced without a warning.
+a normal launch falls back to the built-in theme with a warning, while
+`--screenshot <missing>` fails with an error instead of writing a misleading
+PNG.
 
 Create your own: copy `hiren-client/themes/default` to
 `~/.config/hiren/themes/my/` and edit `theme.toml`. No rebuild needed. See
@@ -221,8 +224,11 @@ bindings, components and animations.
 
 The daemon listens on `$XDG_RUNTIME_DIR/hiren.socket` (mode `0600`, peer uid
 checked, one instance per user). `HIREN_SOCKET_PATH` overrides the location for
-tests and advanced setups; both processes must agree. IPC frames are capped at
-256 KiB, query length and connections are bounded, and protocol errors are
+tests and advanced setups; both processes must agree. If `XDG_RUNTIME_DIR` is
+unset, the daemon falls back to `$TMPDIR/hiren-<uid>.socket` or
+`/tmp/hiren-<uid>.socket`. IPC frames are capped at 256 KiB, queries at 1024
+characters, the daemon accepts at most 32 concurrent connections with a 5 s
+read/write timeout, and protocol errors (including a version mismatch) are
 surfaced in the UI (`launcher.error`) instead of being dropped silently.
 
 Launcher exposes `launcher.query`, `launcher.results`, `launcher.selected_index`, `launcher.error`, etc.; the TOML theme binds visual properties to them.

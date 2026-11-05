@@ -13,8 +13,8 @@ Bundled themes (five):
 - `layered` — two panels + depth orbs reacting to selection
 - `macos` — calm floating card, blur hint, spring selector
 
-Validate without opening a window (bundled **and** user themes are rendered
-headlessly; failures exit non-zero):
+Validate without opening a window (every discovered theme — bundled, user and
+installed — is rendered headlessly; failures exit non-zero):
 
 ```bash
 cargo run -p hiren-client -- --validate-themes
@@ -24,8 +24,10 @@ cargo run -p hiren-client -- --theme circular
 
 Theme discovery order: `~/.config/hiren/themes/<name>/`, then `themes/` next
 to the client binary, then `$(PREFIX)/share/hiren/themes/<name>/`, then
-`$XDG_DATA_DIRS/hiren/themes/<name>/`. A missing requested theme warns loudly
-instead of silently falling back.
+`$XDG_DATA_HOME/hiren/themes/<name>/`, then `$XDG_DATA_DIRS/hiren/themes/<name>/`
+(the source-tree themes directory is a debug-build fallback). A missing
+requested theme warns loudly instead of silently falling back; in
+`--screenshot` mode it is a hard error.
 
 The schema is strict: unknown fields and wrong types are reported, and window
 sizes and spring parameters are validated. Run `--validate-themes` after
